@@ -1,0 +1,13 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.streamlit/secrets.toml
+backups/
+**/backups/
+*.bak
+*.backup*
+*.backup.*
+data/outputs/
+data/sample_docs/private/
+.aws/
