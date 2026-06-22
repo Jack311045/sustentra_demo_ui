@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Audit Setup",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "company_and_facility_profile": {
+      "type": "object"
+    },
+    "reporting_boundary": {
+      "type": "object"
+    },
+    "regulation_and_verification": {
+      "type": "object"
+    },
+    "materiality_and_thresholds": {
+      "type": "object"
+    },
+    "engagement_details": {
+      "type": "object"
+    },
+    "methodology_defaults": {
+      "type": "object"
+    }
+  }
+}

@@ -8,31 +8,63 @@ import json
 from pathlib import Path
 
 
-MOCK_ANALYSIS_RESPONSE = Path("data/demo/mock_outputs/mock_analysis_response.json")
+MOCK_OUTPUT_DIR = Path("data/demo/mock_outputs")
+MOCK_ANALYSIS_RESPONSE = MOCK_OUTPUT_DIR / "mock_analysis_response.json"
+
+SCENARIO_FILE_MAP = {
+    "gap_path": MOCK_OUTPUT_DIR / "mock_analysis_response_gap_path.json",
+    "clean_path": MOCK_OUTPUT_DIR / "mock_analysis_response_clean_path.json",
+}
+
+
+def _load_json_file(path: Path) -> dict | list | None:
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+
+
+def _fallback_empty_response() -> dict:
+    return {
+        "run_id": "mock-run",
+        "status": "not_started",
+        "generated_at": None,
+        "synthetic_demo_data": True,
+        "engagement": {},
+        "library_references": {},
+        "summary": {},
+        "audit_setup": {},
+        "uploaded_demo_files": {},
+        "evidence_results": [],
+        "validation_results": [],
+        "calculation_results": [],
+        "reconciliation_summary": {},
+        "workbook_results": [],
+        "gap_tickets": [],
+        "chat_suggestions": [],
+        "errors": [],
+        "warnings": [
+            "Mock analysis file is missing or invalid. Loaded empty demo response.",
+        ],
+    }
 
 
 class MockApiClient:
-    def analyze(self) -> dict:
-        if MOCK_ANALYSIS_RESPONSE.exists():
-            try:
-                return json.loads(MOCK_ANALYSIS_RESPONSE.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                pass
+    def analyze(self, scenario_id: str = "gap_path") -> dict:
+        candidate = SCENARIO_FILE_MAP.get(str(scenario_id), SCENARIO_FILE_MAP["gap_path"])
 
-        return {
-            "run_id": "mock-run",
-            "status": "not_started",
-            "generated_at": None,
-            "synthetic_demo_data": True,
-            "engagement": {},
-            "library_references": {},
-            "summary": {},
-            "evidence_results": [],
-            "workbook_results": [],
-            "gap_tickets": [],
-            "chat_suggestions": [],
-            "errors": [],
-            "warnings": [
-                "Mock analysis file is missing or invalid. Loaded empty demo response."
-            ],
-        }
+        payload = _load_json_file(candidate)
+        if isinstance(payload, dict):
+            return payload
+
+        fallback_payload = _load_json_file(MOCK_ANALYSIS_RESPONSE)
+        if isinstance(fallback_payload, dict):
+            return fallback_payload
+
+        return _fallback_empty_response()
+
+    def load_audit_setup(self) -> dict:
+        payload = _load_json_file(MOCK_OUTPUT_DIR / "mock_audit_setup.json")
+        return payload if isinstance(payload, dict) else {}

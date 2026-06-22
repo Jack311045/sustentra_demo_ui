@@ -34,15 +34,51 @@ class RagApiError(Exception):
 
 def _load_dotenv_safely() -> None:
     if load_dotenv is not None:
-        load_dotenv()
+        load_dotenv(override=False)
+
+
+def _get_streamlit_secret(key: str) -> str:
+    try:
+        import streamlit as st
+    except Exception:  # pragma: no cover
+        return ""
+
+    try:
+        value = st.secrets.get(key)
+    except Exception:  # pragma: no cover
+        return ""
+    return str(value or "").strip()
+
+
+def _resolve_config_value(key: str) -> str:
+    direct = str(os.getenv(key) or "").strip()
+    if direct:
+        return direct
+
+    _load_dotenv_safely()
+    from_dotenv = str(os.getenv(key) or "").strip()
+    if from_dotenv:
+        return from_dotenv
+
+    return _get_streamlit_secret(key)
 
 
 def _get_rag_base_url() -> str:
-    _load_dotenv_safely()
-    base_url = (os.getenv("RAG_API_URL") or "").strip()
+    base_url = _resolve_config_value("RAG_API_URL")
     if not base_url:
         raise RagApiError("RAG_API_URL is not configured.")
     return base_url.rstrip("/")
+
+
+def get_auditor_chat_mode() -> str:
+    mode = _resolve_config_value("AUDITOR_CHAT_MODE").strip().lower()
+    if mode in {"auto", "real", "mock"}:
+        return mode
+    return "auto"
+
+
+def has_rag_configuration() -> bool:
+    return bool(_resolve_config_value("RAG_API_URL")) and bool(_resolve_config_value("RAG_API_KEY"))
 
 
 def _http_status_message(status_code: int) -> str:
@@ -198,8 +234,7 @@ def query_rag(question: str, audit_context: dict | None = None) -> dict:
     if not isinstance(question, str) or not question.strip():
         raise RagApiError("Question must be a non-empty string.")
 
-    _load_dotenv_safely()
-    api_key = (os.getenv("RAG_API_KEY") or "").strip()
+    api_key = _resolve_config_value("RAG_API_KEY")
     if not api_key:
         raise RagApiError("RAG_API_KEY is missing. Set it in your environment to use real RAG mode.")
 

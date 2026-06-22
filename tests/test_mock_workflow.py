@@ -1,0 +1,72 @@
+from __future__ import annotations
+
+import py_compile
+from pathlib import Path
+
+from src.api.adapters import adapt_analysis_response
+from src.api.mock_client import MockApiClient
+from src.ui.formatting import is_internal_routing_evidence
+
+
+def test_mock_client_gap_path_loads() -> None:
+    response = MockApiClient().analyze("gap_path")
+
+    assert response.get("scenario_id") == "gap_path"
+    assert isinstance(response.get("evidence_results"), list)
+    assert isinstance(response.get("validation_results"), list)
+    assert isinstance(response.get("calculation_results"), list)
+    assert isinstance(response.get("gap_tickets"), list)
+
+
+def test_mock_client_clean_path_structure_exists() -> None:
+    response = MockApiClient().analyze("clean_path")
+
+    assert response.get("scenario_id") == "clean_path"
+    assert response.get("scenario_status") == "not_available"
+    assert isinstance(response.get("warnings"), list)
+
+
+def test_adapter_populates_new_defaults() -> None:
+    adapted = adapt_analysis_response({})
+
+    assert isinstance(adapted.get("audit_setup"), dict)
+    assert isinstance(adapted.get("uploaded_demo_files"), dict)
+    assert isinstance(adapted.get("validation_results"), list)
+    assert isinstance(adapted.get("calculation_results"), list)
+    assert isinstance(adapted.get("reconciliation_summary"), dict)
+
+
+def test_internal_evidence_id_flagged_for_hidden_default_view() -> None:
+    assert is_internal_routing_evidence("EV-PACK-INDEX-2023-000") is True
+    assert is_internal_routing_evidence("EV-NG-2023-010") is False
+
+
+def test_all_pages_compile() -> None:
+    targets = [
+        "app.py",
+        "pages/1_Audit_Setup.py",
+        "pages/2_Evidence_Intake.py",
+        "pages/3_Extraction_Review.py",
+        "pages/4_Validation.py",
+        "pages/5_Calculation_and_Reconciliation.py",
+        "pages/6_Gap_Analysis.py",
+        "pages/7_Regulatory_Assistant.py",
+    ]
+    for target in targets:
+        py_compile.compile(target, doraise=True)
+
+
+def test_evidence_intake_has_prepared_workflow_button_and_disclosure() -> None:
+    source = Path("pages/2_Evidence_Intake.py").read_text(encoding="utf-8")
+
+    assert "Run prepared demo workflow" in source
+    assert "current build uses prepared" in source.lower()
+
+
+def test_regulatory_assistant_disclaimer_and_no_mode_selector() -> None:
+    source = Path("pages/7_Regulatory_Assistant.py").read_text(encoding="utf-8")
+
+    assert "does not provide legal advice" in source
+    assert "Citation review warning" in source
+    assert "Prepared demo answer shown because the live regulatory service is unavailable." in source
+    assert "Chat mode" not in source

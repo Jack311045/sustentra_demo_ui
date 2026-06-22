@@ -1,0 +1,137 @@
+{
+  "run_id": "mock-ab-baldwinsville-2023-clean-path",
+  "status": "not_available",
+  "generated_at": "2026-06-19T12:00:00Z",
+  "mode": "mock_api_response",
+  "synthetic_demo_data": true,
+  "scenario_id": "clean_path",
+  "selected_demo_scenario": "clean_path",
+  "scenario_status": "not_available",
+  "engagement": {
+    "engagement_id": "DEMO-AB-BALDWINSVILLE-2023",
+    "company_id": "AB-INBEV-DEMO",
+    "facility_id": "AB-BWV",
+    "facility_name": "Anheuser-Busch Baldwinsville Brewery",
+    "facility_address": "4797 River Road, Baldwinsville, NY 13027",
+    "reporting_year": 2023,
+    "jurisdiction": "NY_PART_253",
+    "scope": "Scope 1 stationary combustion"
+  },
+  "library_references": {
+    "evidence_type_library": {
+      "library_name": "sustentra_j2_issa5000_evidence_type_library",
+      "version": "0.1.0",
+      "content_hash": null
+    },
+    "formula_library": {
+      "library_name": "sustentra_formula_library",
+      "version": "0.3.1",
+      "content_hash": null
+    },
+    "emission_factor_library": {
+      "library_name": "sustentra_emission_factor_library",
+      "version": "1.0.0",
+      "content_hash": null
+    },
+    "engagement_config_version": "demo-mock-0.1.0",
+    "source_registry_version": "demo-mock-0.1.0"
+  },
+  "summary": {
+    "status": "not_available",
+    "total_evidence": 18,
+    "total_findings": 0,
+    "note": "Clean-path fixture is not available in the current prepared dataset."
+  },
+  "audit_setup": {
+    "company_and_facility_profile": {
+      "company_name": "Anheuser-Busch InBev (prepared demo profile)",
+      "facility_name": "Anheuser-Busch Baldwinsville Brewery",
+      "facility_address": "4797 River Road, Baldwinsville, NY 13027",
+      "company_facility_identifier": "AB-BWV",
+      "duns_number": "Needs confirmation",
+      "industry": "Beverage manufacturing",
+      "facility_type": "Brewery",
+      "reporting_period": "2023-01-01 to 2023-12-31"
+    },
+    "reporting_boundary": {
+      "scope_1": true,
+      "scope_2": false,
+      "scope_3": false,
+      "boundary_type": "Facility",
+      "ownership_control": true,
+      "operational_control": true
+    },
+    "regulation_and_verification": {
+      "primary_regulation": "NY Part 253",
+      "additional_frameworks": [
+        "EPA Part 98"
+      ],
+      "verification_standard": "ISSA 5000",
+      "source_categories": "Scope 1 stationary combustion"
+    },
+    "materiality_and_thresholds": {
+      "reporting_threshold": "Prepared demo threshold - Needs confirmation",
+      "material_misstatement_percentage": "5%",
+      "key_source_categories": "Natural gas combustion; biomass combustion; emergency generation",
+      "missing_data_threshold": "Escalate if monthly source evidence is missing"
+    },
+    "engagement_details": {
+      "engagement_name": "AB Baldwinsville 2023 Scope 1 audit demo",
+      "reporting_period": "2023-01-01 to 2023-12-31",
+      "auditor_reviewer": "Needs confirmation",
+      "scope_description": "Prepared workflow demonstration for auditor-facing review steps.",
+      "verification_objective": "Evaluate evidence traceability, validation outcomes, and reconciliation gaps."
+    },
+    "methodology_defaults": {
+      "method_tier_by_fuel_type": "Natural gas: Tier 1 billing MMBtu; Biomass: method requires validated support.",
+      "emission_factor_source": "EPA GHG Emission Factors Hub 2025 (stationary combustion)",
+      "gwp_basis": "IPCC AR6 100-year combustion defaults",
+      "unit_normalization_defaults": "Normalize activity to MMBtu where applicable.",
+      "biogenic_fossil_treatment": "Report biogenic and fossil treatment separately when required."
+    }
+  },
+  "uploaded_demo_files": {
+    "workbook": {},
+    "evidence_files": [],
+    "note": "Prepared clean-path scenario is currently unavailable."
+  },
+  "evidence_results": [],
+  "validation_results": [],
+  "calculation_results": [
+    {
+      "calculation_id": "CALC-CLEAN-PATH-NOT-AVAILABLE",
+      "source_or_fuel": "Clean path scenario",
+      "calculation_status": "not_computed_in_current_demo",
+      "reason": "Required validated input is unavailable.",
+      "status": "not_available"
+    }
+  ],
+  "reconciliation_summary": {
+    "reconciliation_status": "Not available",
+    "coverage_note": "Clean-path prepared fixture is not available in current demo data."
+  },
+  "workbook_results": [],
+  "gap_tickets": [],
+  "chat_suggestions": [
+    {
+      "question": "Which gaps are most important to show in the demo?",
+      "mock_answer": "Prioritize Gap 10, Gap 5, Gap 2, and Gap 6 because they demonstrate regulatory reasoning beyond simple missing-data detection."
+    },
+    {
+      "question": "Why was the October natural gas row flagged?",
+      "mock_answer": "The workbook uses 281,000 MMBtu, while the linked October utility bill shows 28,100 MMBtu. The ticket traces the discrepancy to Natural Gas!D12 and EV-NG-2023-010."
+    },
+    {
+      "question": "Why is GWP-100 a problem?",
+      "mock_answer": "The mock engagement is configured for NY Part 253, which requires NY-specific GWP20 treatment. The workbook labels the calculation as GWP-100, creating a methodology gap."
+    },
+    {
+      "question": "What evidence is missing for biomass sampling?",
+      "mock_answer": "Only one end-of-period lab report is linked. Weekly sample logs, composite preparation records, and sampling protocol support are missing."
+    }
+  ],
+  "warnings": [
+    "Clean data path scenario is not available in the current prepared dataset."
+  ],
+  "errors": []
+}

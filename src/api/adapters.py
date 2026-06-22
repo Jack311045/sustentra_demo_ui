@@ -11,8 +11,13 @@ def adapt_analysis_response(raw: dict) -> dict:
         raw = {}
 
     adapted = dict(raw)
+    adapted.setdefault("audit_setup", {})
+    adapted.setdefault("uploaded_demo_files", {})
     adapted.setdefault("summary", {})
     adapted.setdefault("evidence_results", [])
+    adapted.setdefault("validation_results", [])
+    adapted.setdefault("calculation_results", [])
+    adapted.setdefault("reconciliation_summary", {})
     adapted.setdefault("workbook_results", [])
     adapted.setdefault("gap_tickets", [])
     adapted.setdefault("chat_suggestions", [])

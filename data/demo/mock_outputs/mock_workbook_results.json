@@ -12,7 +12,7 @@
     "sheet_name": "Equipment Inventory",
     "cell_or_range": "H3:H6",
     "observation_type": "methodology_note",
-    "displayed_value": "Pilot lights excluded per 40 CFR §98.30(d)",
+    "displayed_value": "Pilot lights excluded per 40 CFR \u00a798.30(d)",
     "related_gap_ticket_ids": [
       "GT-DEMO-GAP-002"
     ]
@@ -75,7 +75,7 @@
     "sheet_name": "Natural Gas",
     "cell_or_range": "L2",
     "observation_type": "gwp_basis",
-    "displayed_value": "CO2e (metric tons) ⚠ GWP-100 APPLIED (NY req. GWP-20)",
+    "displayed_value": "CO2e (metric tons) \u26a0 GWP-100 APPLIED (NY req. GWP-20)",
     "related_gap_ticket_ids": [
       "GT-DEMO-GAP-010"
     ]
@@ -85,7 +85,7 @@
     "sheet_name": "Emissions Summary",
     "cell_or_range": "G2",
     "observation_type": "gwp_basis",
-    "displayed_value": "CO2e (metric tons) ⚠ GWP-100 BASIS (NY req. GWP-20)",
+    "displayed_value": "CO2e (metric tons) \u26a0 GWP-100 BASIS (NY req. GWP-20)",
     "related_gap_ticket_ids": [
       "GT-DEMO-GAP-010"
     ]

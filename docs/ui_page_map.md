@@ -1,11 +1,21 @@
 ﻿# UI Page Map
 
-Minimum demo pages:
+## Home
+- app.py
+- Purpose cards and workflow overview
+- Prepared demo disclosure
 
-1. Upload and Analyze
-2. Evidence Review
-3. Findings Register
-4. Finding Detail
-5. Auditor Chat
+## Sidebar pages
+1. Audit Setup
+2. Evidence Intake
+3. Extraction Review
+4. Validation
+5. Calculation & Reconciliation
+6. Gap Analysis
+7. Regulatory Assistant
 
-The UI should clearly separate AI recommendations from auditor actions.
+## Design rules
+- Auditor-facing language over technical enums in primary views.
+- Cards as primary finding presentation.
+- Raw technical JSON shown only in expanders.
+- Explicit prepared-data disclosure in each major workflow stage.

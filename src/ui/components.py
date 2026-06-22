@@ -2,15 +2,8 @@
 
 import streamlit as st
 
-
-def render_status_badge(label: str) -> None:
-    value = (label or "unknown").strip() or "unknown"
-    st.caption(f"Status: {value}")
-
-
-def render_severity_badge(label: str) -> None:
-    value = (label or "unknown").strip() or "unknown"
-    st.caption(f"Severity: {value}")
+from src.ui.cards import render_severity_badge, render_status_badge
+from src.ui.formatting import safe_text, severity_label
 
 
 def render_summary_cards(summary: dict) -> None:
@@ -24,17 +17,39 @@ def render_summary_cards(summary: dict) -> None:
     col5.metric("Total Findings", summary.get("total_findings", 0))
 
 
+def render_offering_cards() -> None:
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        with st.container(border=True):
+            st.markdown("### Evidence extraction")
+            st.write("- Clean extraction")
+            st.write("- Source traceability")
+            st.write("- Human review")
+
+    with col2:
+        with st.container(border=True):
+            st.markdown("### Gap analysis")
+            st.write("- Validation")
+            st.write("- Calculation/reconciliation")
+            st.write("- Reasoning trail")
+            st.write("- Auditor-facing findings")
+
+    with col3:
+        with st.container(border=True):
+            st.markdown("### Regulation intelligence")
+            st.write("- NY Part 253 RAG")
+            st.write("- Source-backed regulatory answers")
+            st.write("- Contextual audit support")
+
+
 def render_ticket_header(ticket: dict) -> None:
     ticket = ticket if isinstance(ticket, dict) else {}
     ticket_id = ticket.get("gap_ticket_id", "N/A")
     title = ticket.get("title", "Untitled finding")
 
     st.subheader(f"{ticket_id}: {title}")
-    render_status_badge(ticket.get("status", "unknown"))
+    render_status_badge(safe_text(ticket.get("status", "unknown")))
 
     severity = ticket.get("severity")
-    if isinstance(severity, dict):
-        severity_label = severity.get("auditor_assigned") or severity.get("system_suggested")
-    else:
-        severity_label = severity
-    render_severity_badge(str(severity_label or "unknown"))
+    render_severity_badge(str(severity_label(severity or "unknown")))
