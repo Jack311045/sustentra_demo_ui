@@ -7,6 +7,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from src.api.adapters import normalize_audit_setup
+
 
 MOCK_OUTPUT_DIR = Path("data/demo/mock_outputs")
 MOCK_ANALYSIS_RESPONSE = MOCK_OUTPUT_DIR / "mock_analysis_response.json"
@@ -21,7 +23,7 @@ def _load_json_file(path: Path) -> dict | list | None:
     if not path.exists():
         return None
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError:
         return None
 
@@ -57,14 +59,16 @@ class MockApiClient:
 
         payload = _load_json_file(candidate)
         if isinstance(payload, dict):
+            payload["audit_setup"] = normalize_audit_setup(payload.get("audit_setup"))
             return payload
 
         fallback_payload = _load_json_file(MOCK_ANALYSIS_RESPONSE)
         if isinstance(fallback_payload, dict):
+            fallback_payload["audit_setup"] = normalize_audit_setup(fallback_payload.get("audit_setup"))
             return fallback_payload
 
         return _fallback_empty_response()
 
     def load_audit_setup(self) -> dict:
         payload = _load_json_file(MOCK_OUTPUT_DIR / "mock_audit_setup.json")
-        return payload if isinstance(payload, dict) else {}
+        return normalize_audit_setup(payload if isinstance(payload, dict) else {})

@@ -6,6 +6,7 @@ from pathlib import Path
 from src.api.adapters import adapt_analysis_response
 from src.api.mock_client import MockApiClient
 from src.ui.formatting import is_internal_routing_evidence
+from src.ui.workflow import build_engagement_expectation_summary
 
 
 def test_mock_client_gap_path_loads() -> None:
@@ -70,3 +71,23 @@ def test_regulatory_assistant_disclaimer_and_no_mode_selector() -> None:
     assert "Citation review warning" in source
     assert "Prepared demo answer shown because the live regulatory service is unavailable." in source
     assert "Chat mode" not in source
+
+
+def test_workflow_progress_renderer_removed() -> None:
+    source = Path("src/ui/workflow.py").read_text(encoding="utf-8")
+
+    assert "render_workflow_progress" not in source
+    assert "WORKFLOW_STEPS" not in source
+
+
+def test_engagement_expectation_summary_helper_returns_text() -> None:
+    summary = build_engagement_expectation_summary(
+        selected_scopes=["Scope 1", "Scope 2"],
+        reporting_period="2023-01-01 to 2023-12-31",
+        materiality_absolute="750 tCO2e",
+    )
+
+    assert isinstance(summary, str)
+    assert "Scope 1, Scope 2" in summary
+    assert "12 per selected scope" in summary
+    assert "750 tCO2e" in summary

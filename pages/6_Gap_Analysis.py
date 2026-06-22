@@ -3,9 +3,11 @@ from __future__ import annotations
 import streamlit as st
 
 from src.ui.cards import render_gap_card
+from src.ui.components import render_audit_setup_context
 from src.ui.formatting import assertion_label, category_label, normalize_severity, severity_label, status_label
 from src.ui.state import (
     ask_regulatory_assistant,
+    get_audit_setup,
     draft_auditor_note,
     get_analysis_response,
     init_session_state,
@@ -14,7 +16,7 @@ from src.ui.state import (
     open_workbook_location,
 )
 from src.ui.traceability import render_evidence_trace, render_reasoning_trail, render_regulatory_basis
-from src.ui.workflow import render_prepared_demo_disclosure, render_workflow_progress
+from src.ui.workflow import render_prepared_demo_disclosure
 
 
 TITLE_MAP = {
@@ -45,8 +47,8 @@ CATEGORY_BY_TICKET = {
 init_session_state()
 st.title("Gap Analysis")
 st.caption("Auditor-facing findings with evidence trace, workbook trace, and regulatory basis.")
-render_workflow_progress(current_step=6)
 render_prepared_demo_disclosure()
+render_audit_setup_context(get_audit_setup())
 
 analysis_response = get_analysis_response()
 if not analysis_response:

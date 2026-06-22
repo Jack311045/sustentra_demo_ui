@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import streamlit as st
 
+from src.ui.components import render_audit_setup_context
 from src.ui.state import (
     get_analysis_response,
+    get_audit_setup,
     get_selected_calculation_id,
     get_selected_workbook_location,
     init_session_state,
     set_selected_calculation_id,
 )
 from src.ui.tables import render_calculation_table
-from src.ui.workflow import render_prepared_demo_disclosure, render_workflow_progress
+from src.ui.workflow import render_prepared_demo_disclosure
 
 
 def _summary_number(value) -> str:
@@ -22,8 +24,8 @@ def _summary_number(value) -> str:
 init_session_state()
 st.title("Calculation & Reconciliation")
 st.caption("Trace evidence-to-calculation flow and compare recalculated totals with workbook-reported values.")
-render_workflow_progress(current_step=5)
 render_prepared_demo_disclosure()
+render_audit_setup_context(get_audit_setup())
 
 analysis_response = get_analysis_response()
 if not analysis_response:

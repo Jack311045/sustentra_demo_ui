@@ -38,16 +38,23 @@ def _find_ticket(gap_tickets: list[dict], ticket_id: str | None) -> dict | None:
 
 def _audit_context_text(audit_setup: dict, analysis_response: dict) -> str:
     company_profile = audit_setup.get("company_and_facility_profile", {})
+    reporting_boundary = audit_setup.get("reporting_boundary", {})
     regulation = audit_setup.get("regulation_and_verification", {})
 
     facility_name = company_profile.get("facility_name") or analysis_response.get("engagement", {}).get("facility_name")
     reporting_period = company_profile.get("reporting_period") or "Needs confirmation"
     primary_reg = regulation.get("primary_regulation") or "NY Part 253"
+    consolidation = reporting_boundary.get("consolidation_approach") or "Operational control"
+    assurance_standard = regulation.get("verification_standard") or "ISSA 5000"
+    assurance_level = regulation.get("assurance_level") or "Limited assurance"
 
     return (
         f"Facility: {facility_name or 'Needs confirmation'}; "
         f"Reporting period: {reporting_period}; "
-        f"Primary regulation: {primary_reg}"
+        f"Primary regulation: {primary_reg}; "
+        f"Consolidation approach (audit context): {consolidation}; "
+        f"Assurance standard (audit context): {assurance_standard}; "
+        f"Assurance level (audit context): {assurance_level}"
     )
 
 

@@ -15,7 +15,7 @@ from src.ui.state import (
     set_reviewed_extraction_field,
     set_selected_evidence_id,
 )
-from src.ui.workflow import render_prepared_demo_disclosure, render_workflow_progress
+from src.ui.workflow import render_prepared_demo_disclosure
 
 
 ASSET_MANIFEST_PATH = Path("data/demo/mock_outputs/evidence_assets_manifest.json")
@@ -61,7 +61,6 @@ def _friendly_field_label(field_key: str) -> str:
 init_session_state()
 st.title("Extraction Review")
 st.caption("Compare source evidence with prepared extracted fields and apply reviewer decisions.")
-render_workflow_progress(current_step=3)
 render_prepared_demo_disclosure()
 
 analysis_response = get_analysis_response()

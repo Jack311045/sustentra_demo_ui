@@ -2,7 +2,7 @@
 
 from src.ui.components import render_offering_cards
 from src.ui.state import init_session_state
-from src.ui.workflow import render_prepared_demo_disclosure, render_workflow_progress
+from src.ui.workflow import render_prepared_demo_disclosure
 
 st.set_page_config(page_title="Sustentra Demo", layout="wide")
 init_session_state()
@@ -13,8 +13,6 @@ st.caption("Auditor-facing workflow for prepared extraction, validation, reconci
 st.subheader("Demo purpose")
 render_offering_cards()
 
-st.subheader("Workflow progress")
-render_workflow_progress(current_step=1)
 render_prepared_demo_disclosure()
 
 st.info(

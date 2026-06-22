@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import streamlit as st
 
+from src.ui.components import render_audit_setup_context
 from src.ui.state import (
+    get_audit_setup,
     get_analysis_response,
     get_selected_validation_id,
     init_session_state,
@@ -10,14 +12,14 @@ from src.ui.state import (
 )
 from src.ui.tables import render_validation_table
 from src.ui.traceability import render_reasoning_trail
-from src.ui.workflow import render_prepared_demo_disclosure, render_workflow_progress
+from src.ui.workflow import render_prepared_demo_disclosure
 
 
 init_session_state()
 st.title("Validation")
 st.caption("Deterministic rule checks and record-level reasoning trail for auditor review.")
-render_workflow_progress(current_step=4)
 render_prepared_demo_disclosure()
+render_audit_setup_context(get_audit_setup())
 
 analysis_response = get_analysis_response()
 if not analysis_response:

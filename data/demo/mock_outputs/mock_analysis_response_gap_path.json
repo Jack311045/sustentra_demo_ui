@@ -2978,7 +2978,7 @@
       "facility_name": "Anheuser-Busch Baldwinsville Brewery",
       "facility_address": "4797 River Road, Baldwinsville, NY 13027",
       "company_facility_identifier": "AB-BWV",
-      "duns_number": "Needs confirmation",
+      "duns_number": "00-123-4567",
       "industry": "Beverage manufacturing",
       "facility_type": "Brewery",
       "reporting_period": "2023-01-01 to 2023-12-31"
@@ -2988,8 +2988,7 @@
       "scope_2": false,
       "scope_3": false,
       "boundary_type": "Facility",
-      "ownership_control": true,
-      "operational_control": true
+      "consolidation_approach": "Operational control"
     },
     "regulation_and_verification": {
       "primary_regulation": "NY Part 253",
@@ -2997,18 +2996,20 @@
         "EPA Part 98"
       ],
       "verification_standard": "ISSA 5000",
+      "assurance_level": "Limited assurance",
       "source_categories": "Scope 1 stationary combustion"
     },
     "materiality_and_thresholds": {
-      "reporting_threshold": "Prepared demo threshold - Needs confirmation",
+      "reporting_threshold": "1,000 tCO2e (organizational reporting threshold)",
       "material_misstatement_percentage": "5%",
+      "materiality_absolute": "750 tCO2e",
       "key_source_categories": "Natural gas combustion; biomass combustion; emergency generation",
       "missing_data_threshold": "Escalate if monthly source evidence is missing"
     },
     "engagement_details": {
       "engagement_name": "AB Baldwinsville 2023 Scope 1 audit demo",
       "reporting_period": "2023-01-01 to 2023-12-31",
-      "auditor_reviewer": "Needs confirmation",
+      "auditor_reviewer": "Sustentra prepared-demo reviewer",
       "scope_description": "Prepared workflow demonstration for auditor-facing review steps.",
       "verification_objective": "Evaluate evidence traceability, validation outcomes, and reconciliation gaps."
     },

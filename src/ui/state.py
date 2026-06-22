@@ -4,11 +4,16 @@ from typing import Any
 
 import streamlit as st
 
+from src.api.adapters import has_meaningful_audit_setup, normalize_audit_setup
+
 
 _DEFAULTS: dict[str, Any] = {
     "analysis_response": None,
     "selected_demo_scenario": "gap_path",
     "audit_setup": {},
+    "audit_setup_user_saved": False,
+    "audit_setup_revision": 0,
+    "audit_setup_widgets_revision": -1,
     "uploaded_workbook_metadata": {},
     "uploaded_evidence_metadata": [],
     "reviewed_extraction_fields": {},
@@ -31,9 +36,35 @@ def init_session_state() -> None:
     for key, value in _DEFAULTS.items():
         st.session_state.setdefault(key, value)
 
+    raw_setup = st.session_state.get("audit_setup")
+    if has_meaningful_audit_setup(raw_setup):
+        st.session_state["audit_setup"] = normalize_audit_setup(raw_setup)
+    else:
+        st.session_state["audit_setup"] = {}
+
+    analysis_response = st.session_state.get("analysis_response")
+    if isinstance(analysis_response, dict):
+        normalized_response = dict(analysis_response)
+        raw_response_setup = normalized_response.get("audit_setup")
+        if has_meaningful_audit_setup(raw_response_setup):
+            normalized_response["audit_setup"] = normalize_audit_setup(raw_response_setup)
+        else:
+            normalized_response["audit_setup"] = {}
+        st.session_state["analysis_response"] = normalized_response
+
 
 def set_analysis_response(response: dict) -> None:
-    st.session_state["analysis_response"] = response if isinstance(response, dict) else {}
+    if not isinstance(response, dict):
+        st.session_state["analysis_response"] = {}
+        return
+
+    normalized = dict(response)
+    raw_setup = normalized.get("audit_setup")
+    if has_meaningful_audit_setup(raw_setup):
+        normalized["audit_setup"] = normalize_audit_setup(raw_setup)
+    else:
+        normalized["audit_setup"] = {}
+    st.session_state["analysis_response"] = normalized
 
 
 def get_analysis_response() -> dict | None:
@@ -52,13 +83,45 @@ def get_selected_demo_scenario() -> str:
     return "gap_path"
 
 
-def set_audit_setup(value: dict) -> None:
-    st.session_state["audit_setup"] = value if isinstance(value, dict) else {}
+def set_audit_setup(
+    value: dict,
+    *,
+    user_saved: bool | None = None,
+    increment_revision: bool = True,
+) -> None:
+    cleaned = normalize_audit_setup(value) if has_meaningful_audit_setup(value) else {}
+    existing = st.session_state.get("audit_setup")
+    if not isinstance(existing, dict):
+        existing = {}
+
+    if existing != cleaned:
+        st.session_state["audit_setup"] = cleaned
+        if increment_revision:
+            current_revision = int(st.session_state.get("audit_setup_revision", 0))
+            st.session_state["audit_setup_revision"] = current_revision + 1
+
+    if user_saved is not None:
+        st.session_state["audit_setup_user_saved"] = bool(user_saved)
 
 
 def get_audit_setup() -> dict:
     value = st.session_state.get("audit_setup")
-    return value if isinstance(value, dict) else {}
+    if has_meaningful_audit_setup(value):
+        normalized = normalize_audit_setup(value)
+        st.session_state["audit_setup"] = normalized
+        return normalized
+    return {}
+
+
+def is_audit_setup_user_saved() -> bool:
+    return bool(st.session_state.get("audit_setup_user_saved", False))
+
+
+def get_audit_setup_revision() -> int:
+    try:
+        return int(st.session_state.get("audit_setup_revision", 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def update_audit_setup_field(section_key: str, field_key: str, value: Any) -> None:

@@ -1,22 +1,26 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
 import streamlit as st
 
-from src.api.adapters import adapt_analysis_response
+from src.api.adapters import adapt_analysis_response, resolve_audit_setup
 from src.api.mock_client import MockApiClient
+from src.ui.components import render_audit_setup_context
 from src.ui.state import (
     get_audit_setup,
     get_selected_demo_scenario,
     init_session_state,
+    is_audit_setup_user_saved,
     set_analysis_response,
+    set_audit_setup,
     set_prepared_demo_disclosure_acknowledged,
     set_selected_demo_scenario,
     set_uploaded_evidence_metadata,
     set_uploaded_workbook_metadata,
 )
-from src.ui.workflow import render_prepared_demo_disclosure, render_workflow_progress
+from src.ui.workflow import render_prepared_demo_disclosure
 
 
 SCENARIO_OPTIONS = {
@@ -28,13 +32,14 @@ SCENARIO_OPTIONS = {
 init_session_state()
 st.title("Evidence Intake")
 st.caption("Upload engagement files and run the prepared workflow dataset for this demo.")
-render_workflow_progress(current_step=2)
 render_prepared_demo_disclosure()
+render_audit_setup_context(get_audit_setup())
 
 st.info(
     "The uploaded files establish the demo engagement workflow. The current build uses prepared "
     "extraction, validation, calculation, and gap results until the document-analysis API is connected."
 )
+st.caption("Current session Audit Setup values are preserved when switching prepared scenarios.")
 
 workbook_file = st.file_uploader(
     "Upload workbook",
@@ -98,7 +103,8 @@ with summary_col2:
         st.caption("No evidence files uploaded yet.")
 
 if st.button("Run prepared demo workflow", type="primary"):
-    raw_response = MockApiClient().analyze(scenario_id=selected_scenario)
+    client = MockApiClient()
+    raw_response = client.analyze(scenario_id=selected_scenario)
     adapted = adapt_analysis_response(raw_response)
 
     uploaded_files_payload = {
@@ -111,8 +117,21 @@ if st.button("Run prepared demo workflow", type="primary"):
         ),
     }
 
+    effective_setup = resolve_audit_setup(
+        session_setup=get_audit_setup(),
+        response_setup=adapted.get("audit_setup"),
+        prepared_setup=client.load_audit_setup(),
+        session_is_user_saved=is_audit_setup_user_saved(),
+    )
+
+    set_audit_setup(
+        effective_setup,
+        user_saved=is_audit_setup_user_saved(),
+        increment_revision=True,
+    )
+
     adapted["uploaded_demo_files"] = uploaded_files_payload
-    adapted["audit_setup"] = get_audit_setup()
+    adapted["audit_setup"] = deepcopy(effective_setup)
     adapted["selected_demo_scenario"] = selected_scenario
     adapted.setdefault("warnings", [])
     if selected_scenario == "clean_path" and adapted.get("scenario_status") == "not_available":

@@ -53,3 +53,35 @@ def render_ticket_header(ticket: dict) -> None:
 
     severity = ticket.get("severity")
     render_severity_badge(str(severity_label(severity or "unknown")))
+
+
+def render_audit_setup_context(audit_setup: dict) -> None:
+    audit_setup = audit_setup if isinstance(audit_setup, dict) else {}
+    reporting_boundary = (
+        audit_setup.get("reporting_boundary")
+        if isinstance(audit_setup.get("reporting_boundary"), dict)
+        else {}
+    )
+    regulation = (
+        audit_setup.get("regulation_and_verification")
+        if isinstance(audit_setup.get("regulation_and_verification"), dict)
+        else {}
+    )
+    materiality = (
+        audit_setup.get("materiality_and_thresholds")
+        if isinstance(audit_setup.get("materiality_and_thresholds"), dict)
+        else {}
+    )
+
+    consolidation = reporting_boundary.get("consolidation_approach") or "Operational control"
+    assurance_standard = regulation.get("verification_standard") or "ISSA 5000"
+    assurance_level = regulation.get("assurance_level") or "Limited assurance"
+    materiality_percent = materiality.get("material_misstatement_percentage") or "5%"
+    materiality_absolute = materiality.get("materiality_absolute") or "750 tCO2e"
+
+    with st.container(border=True):
+        st.markdown("**Audit setup context**")
+        st.caption(f"Consolidation approach: {consolidation}")
+        st.caption(f"Assurance standard: {assurance_standard}")
+        st.caption(f"Assurance level: {assurance_level}")
+        st.caption(f"Materiality: {materiality_percent} / {materiality_absolute}")
