@@ -398,8 +398,8 @@ def open_applicable_regulation(ticket_id: str | None) -> bool:
     set_chat_context_gap_ticket_id(ticket_id)
     set_selected_gap_ticket_id(ticket_id)
     return _switch_page_with_fallback(
-        "pages/7_Regulatory_Assistant.py",
-        "Page navigation is not available in this environment. Open Regulatory Assistant from the sidebar.",
+        "pages/7_Sustentra_AI_Assistant.py",
+        "Page navigation is not available in this environment. Open Sustentra AI Assistant from the sidebar.",
     )
 
 
@@ -408,8 +408,8 @@ def ask_regulatory_assistant(ticket_id: str | None, suggested_prompt: str | None
     if suggested_prompt:
         st.session_state["selected_chat_question"] = suggested_prompt
     return _switch_page_with_fallback(
-        "pages/7_Regulatory_Assistant.py",
-        "Page navigation is not available in this environment. Open Regulatory Assistant from the sidebar.",
+        "pages/7_Sustentra_AI_Assistant.py",
+        "Page navigation is not available in this environment. Open Sustentra AI Assistant from the sidebar.",
     )
 
 

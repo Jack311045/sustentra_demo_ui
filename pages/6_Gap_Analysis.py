@@ -10,6 +10,7 @@ from src.ui.state import (
     get_audit_setup,
     draft_auditor_note,
     get_analysis_response,
+    get_selected_gap_ticket_id,
     init_session_state,
     open_applicable_regulation,
     open_original_evidence,
@@ -110,8 +111,19 @@ if not filtered_tickets:
 
 st.caption(f"Displaying {len(filtered_tickets)} auditor-facing gap cards.")
 
-for ticket in sorted(filtered_tickets, key=lambda item: normalize_severity(item.get("severity"))):
+selected_gap_ticket_id = get_selected_gap_ticket_id()
+
+
+def _ticket_sort_key(ticket: dict) -> tuple[int, str]:
     ticket_id = str(ticket.get("gap_ticket_id") or "")
+    selected_rank = 0 if selected_gap_ticket_id and ticket_id == selected_gap_ticket_id else 1
+    return (selected_rank, normalize_severity(ticket.get("severity")))
+
+for ticket in sorted(filtered_tickets, key=_ticket_sort_key):
+    ticket_id = str(ticket.get("gap_ticket_id") or "")
+
+    if selected_gap_ticket_id and ticket_id == selected_gap_ticket_id:
+        st.caption("Opened from Calculation & Reconciliation")
 
     actions = render_gap_card(ticket, key_prefix=ticket_id)
 

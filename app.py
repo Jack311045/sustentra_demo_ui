@@ -17,5 +17,5 @@ render_prepared_demo_disclosure()
 
 st.info(
 	"Use the sidebar to walk through Audit Setup, Evidence Intake, Extraction Review, Validation, "
-	"Calculation & Reconciliation, Gap Analysis, and Regulatory Assistant."
+	"Calculation & Reconciliation, Gap Analysis, and Sustentra AI Assistant."
 )

@@ -2947,20 +2947,28 @@
   ],
   "chat_suggestions": [
     {
-      "question": "Which gaps are most important to show in the demo?",
-      "mock_answer": "Prioritize Gap 10, Gap 5, Gap 2, and Gap 6 because they demonstrate regulatory reasoning beyond simple missing-data detection."
+      "question": "Can we accept a biomass-derived CO2 classification based only on an invoice line item and a marketing certificate?",
+      "mock_answer": "No. Invoice labels and marketing certificates are not sufficient on their own to support biogenic classification. The file should include supplier specifications, method documentation, and traceable support for biogenic treatment decisions. Basis: 6 NYCRR 253-4.2 and 6 NYCRR 253-8.2"
     },
     {
-      "question": "Why was the October natural gas row flagged?",
-      "mock_answer": "The workbook uses 281,000 MMBtu, while the linked October utility bill shows 28,100 MMBtu. The ticket traces the discrepancy to Natural Gas!D12 and EV-NG-2023-010."
+      "question": "Is total fuel quantity alone enough for Part 253 reporting, or do we need supplier account information?",
+      "mock_answer": "Total fuel quantity alone is not enough. Supporting records should identify the supplier account, delivery period, and fuel attributes so the reported activity can be traced and reproduced during review. Basis: 6 NYCRR 253-8.2"
     },
     {
-      "question": "Why is GWP-100 a problem?",
-      "mock_answer": "The mock engagement is configured for NY Part 253, which requires NY-specific GWP20 treatment. The workbook labels the calculation as GWP-100, creating a methodology gap."
+      "question": "If a facility reports 9,650 MT CO2e from boilers but excludes a 620 MT hydrogen fuel cell, is it below the 10,000 MT reporting threshold?",
+      "mock_answer": "No. The combined total is 10,270 MT CO2e, which is above a 10,000 MT threshold. Excluding a material combustion source would understate totals and should be corrected before filing. Basis: 6 NYCRR 253-3.1"
     },
     {
-      "question": "What evidence is missing for biomass sampling?",
-      "mock_answer": "Only one end-of-period lab report is linked. Weekly sample logs, composite preparation records, and sampling protocol support are missing."
+      "question": "Do we need a separate scope 1 line for pilot fuel used in flare operation, or can it stay embedded in total fuel gas?",
+      "mock_answer": "Pilot fuel used for flare operation should be separately identifiable when it affects source-level completeness or verification traceability. If retained in a combined fuel line, the workbook must still provide a reconcilable breakout and supporting method note. Basis: 6 NYCRR 253-4.1 and 6 NYCRR 253-8.2"
+    },
+    {
+      "question": "Can we carry over a prior-year fuel meter value as opening inventory without documenting meter reset and calibration evidence?",
+      "mock_answer": "No. Carryover values require documented continuity controls, including reset condition and calibration support. Without that support, the opening value should be treated as an estimate and clearly flagged. Basis: 6 NYCRR 253-8.2"
+    },
+    {
+      "question": "If district steam purchases are billed in MMBtu but internal logs convert to tonnes steam, which value is acceptable for Part 253 reporting support?",
+      "mock_answer": "Use the billed MMBtu record as the primary support unless the conversion process is formally controlled, documented, and reproducible. If tonnes steam is retained, include the conversion basis and monthly reconciliation to billed quantities. Basis: 6 NYCRR 253-8.2"
     }
   ],
   "errors": [],

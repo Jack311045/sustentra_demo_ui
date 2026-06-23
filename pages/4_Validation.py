@@ -6,6 +6,7 @@ from src.ui.components import render_audit_setup_context
 from src.ui.state import (
     get_audit_setup,
     get_analysis_response,
+    get_selected_validation_id,
     init_session_state,
 )
 from src.ui.validation import (
@@ -68,14 +69,18 @@ def _render_check_card(validation_id: str, check: dict, audit_setup: dict) -> No
                 st.write(f"Explanation: {check.get('explanation')}")
 
 
-def _render_validation_record(record: dict, audit_setup: dict) -> None:
+def _render_validation_record(record: dict, audit_setup: dict, selected_validation_id: str | None) -> None:
     record_label = str(record.get("record_label") or "Validation record")
     validation_id = str(record.get("validation_id") or "")
     evidence_id = str(record.get("evidence_id") or "")
     overall_status = str(record.get("overall_status") or "")
-    expanded = normalize_validation_status(overall_status) in {"fail", "flagged"}
+    expanded = normalize_validation_status(overall_status) in {"fail", "flagged"} or (
+        selected_validation_id is not None and validation_id == selected_validation_id
+    )
 
     with st.expander(record_label, expanded=expanded):
+        if selected_validation_id is not None and validation_id == selected_validation_id:
+            st.caption("Opened from Calculation & Reconciliation")
         st.markdown(_status_badge(overall_status), unsafe_allow_html=True)
         caption_bits = []
         if validation_id:
@@ -132,5 +137,6 @@ count_col4.metric("Fail", status_counts["fail"])
 coverage = derive_monthly_evidence_coverage(analysis_response, audit_setup)
 st.info(format_monthly_coverage_banner(coverage))
 
+selected_validation_id = get_selected_validation_id()
 for record in sort_validation_records(validation_results):
-    _render_validation_record(record, audit_setup)
+    _render_validation_record(record, audit_setup, selected_validation_id)

@@ -62,10 +62,12 @@ def _collect_rendered_text(at: AppTest) -> str:
     return "\n".join(parts)
 
 
-def _run_page4(analysis_response: dict) -> AppTest:
+def _run_page4(analysis_response: dict, *, selected_validation_id: str | None = None) -> AppTest:
     at = AppTest.from_file(str(PAGE_4), default_timeout=30)
     at.session_state["analysis_response"] = analysis_response
     at.session_state["audit_setup"] = _read_json(AUDIT_SETUP_PATH)
+    if selected_validation_id is not None:
+        at.session_state["selected_validation_id"] = selected_validation_id
     at.run()
     return at
 
@@ -93,6 +95,12 @@ def test_page4_does_not_mutate_analysis_response() -> None:
         "set_selected_validation_id",
     ):
         assert token not in identifiers
+
+
+def test_page4_supports_selected_validation_deeplink() -> None:
+    source = _page_source()
+    assert "get_selected_validation_id" in source
+    assert "Opened from Calculation & Reconciliation" in source
 
 
 def test_status_normalization_case_insensitive() -> None:
@@ -212,6 +220,13 @@ def test_page4_gap_path_renders_cards_exception_first() -> None:
     assert "Fail" in rendered_text
     assert "Monthly evidence coverage: 12 / 12 bills received" in rendered_text
     assert "Needs confirmation" not in rendered_text
+
+
+def test_page4_selected_validation_shows_opened_caption() -> None:
+    at = _run_page4(_read_json(GAP_PATH), selected_validation_id="VAL-LAB-2023-001")
+    assert len(at.exception) == 0
+    rendered_text = _collect_rendered_text(at)
+    assert "Opened from Calculation & Reconciliation" in rendered_text
 
 
 def test_page4_clean_path_shows_graceful_no_validation_message() -> None:

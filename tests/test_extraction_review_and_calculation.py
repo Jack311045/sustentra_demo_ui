@@ -31,11 +31,15 @@ from src.ui.extraction_review import (
     record_confidence_bucket,
 )
 from src.ui.libraries import (
+    emission_factor_library_source_label,
     factor_energy_basis,
+    factor_reference_label,
+    gwp_reference_label,
     gwp_values,
     parse_leading_number,
     parse_materiality_absolute,
     parse_materiality_percent,
+    resolve_calculation_template,
     resolve_emission_factor,
     resolve_formula,
     resolve_formulas,
@@ -236,6 +240,25 @@ def test_resolve_gwp_set_combustion_values() -> None:
 
 def test_default_gwp_set_resolves_when_id_missing() -> None:
     assert resolve_gwp_set(None)["gwp_set_id"] == "IPCC_AR6_100_YEAR_COMBUSTION"
+
+
+def test_plain_language_factor_and_gwp_labels() -> None:
+    assert (
+        factor_reference_label("EPA_HUB_2025_SC_NATURAL_GAS")
+        == "EPA Emission Factors Hub 2025 — stationary combustion, natural gas"
+    )
+    assert gwp_reference_label("IPCC_AR6_100_YEAR_COMBUSTION") == "IPCC AR6 — 100-year GWP"
+
+
+def test_emission_factor_library_source_label_and_template_lookup() -> None:
+    source_label = emission_factor_library_source_label()
+    assert "Sustentra emission factor library" in source_label
+    assert "v1.0.0" in source_label
+
+    template = resolve_calculation_template("ENERGY_BASIS_STATIONARY_COMBUSTION")
+    assert template is not None
+    assert template.get("template_id") == "ENERGY_BASIS_STATIONARY_COMBUSTION"
+    assert isinstance(template.get("steps"), list)
 
 
 def test_materiality_parsing_from_audit_setup() -> None:

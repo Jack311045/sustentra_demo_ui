@@ -1,13 +1,8 @@
 """Calculation & Reconciliation (Page 5).
 
-All of Act 2: an independent human-review gate, dynamic formula/factor/GWP
-resolution from the canonical libraries, a visible recalculation trail, the
-reconciliation punchline, and explicit handoff into Gap Analysis.
-
-This page is read-only with respect to ``analysis_response`` -- it never calls
-``set_analysis_response``/``MockApiClient``/``adapt_analysis_response`` and never
-mutates the prepared data. The gate is derived from ``reviewed_extraction_fields``
-each rerun; there is no persisted ``review_complete``.
+Narrative auditor workflow for prepared calculation/reconciliation outputs. This
+page is read-only with respect to ``analysis_response`` and uses only the
+session overlay for UI interactions (for example, reveal-state toggles).
 """
 
 from __future__ import annotations
@@ -18,50 +13,355 @@ from src.ui.components import render_audit_setup_context
 from src.ui.extraction_review import get_extraction_review_progress
 from src.ui.formatting import safe_text
 from src.ui.libraries import (
+    emission_factor_library_source_label,
     factor_energy_basis,
+    factor_reference_label,
+    gwp_reference_label,
     gwp_values,
     parse_materiality_absolute,
     parse_materiality_percent,
-    resolve_emission_factor,
+    resolve_calculation_template,
     resolve_formulas,
+    resolve_emission_factor,
     resolve_gwp_set,
 )
 from src.ui.state import (
     get_analysis_response,
     get_audit_setup,
     get_reviewed_extraction_fields,
-    get_selected_calculation_id,
-    get_selected_workbook_location,
     init_session_state,
-    set_selected_calculation_id,
+    open_original_evidence,
     set_selected_gap_ticket_id,
+    set_selected_validation_id,
 )
-from src.ui.tables import render_calculation_table
 from src.ui.workflow import render_prepared_demo_disclosure
 
 
 NOT_COMPUTED = "not_computed_in_current_demo"
+COMPUTED = "computed"
+
+_HELD_SORT_ORDER = {
+    "CALC-BLR003-2023-009": 0,
+    "CALC-NG-2023-012": 1,
+}
+
+_HELD_EXPLANATIONS = {
+    "CALC-BLR003-2023-009": {
+        "title": "BLR-003 biomass activity",
+        "reason": (
+            "Held — requires validated biomass heat-content conversion and a "
+            "biomass-aligned emission factor before MMBtu normalization."
+        ),
+        "assurance": (
+            "Validation identified the same methodology issue. The system refuses "
+            "to create an emissions result from an unsupported conversion."
+        ),
+    },
+    "CALC-NG-2023-012": {
+        "title": "Natural gas — December cross-year period",
+        "reason": "Held — requires allocation of the service period between the 2023 and 2024 reporting years.",
+        "assurance": (
+            "Validation identified the same cutoff issue. The system refuses to "
+            "calculate until the reporting-year allocation is supported."
+        ),
+    },
+}
+
+_HELD_VALIDATION_LINKS = {
+    "CALC-BLR003-2023-009": [
+        ("VAL-BLR003-2023-009", "Review validation issue"),
+        ("VAL-LAB-2023-001", "Review related sampling support"),
+    ],
+    "CALC-NG-2023-012": [("VAL-NG-2023-012", "Review validation issue")],
+}
 
 
 def _switch_to(page: str, fallback: str) -> None:
     switch_page = getattr(st, "switch_page", None)
     if callable(switch_page):
-        switch_page(page)
-    else:
-        st.info(fallback)
+        try:
+            switch_page(page)
+            return
+        except Exception:
+            pass
+    st.info(fallback)
 
 
-def _fmt(value) -> str:
+def _fmt(value, *, decimals: int = 1) -> str:
     if value is None:
         return "—"
     if isinstance(value, (int, float)):
-        text = f"{value:,.5f}".rstrip("0").rstrip(".")
+        if decimals <= 0:
+            return f"{value:,.0f}"
+        text = f"{value:,.{decimals}f}"
+        if "." in text:
+            text = text.rstrip("0").rstrip(".")
         return text or "0"
     return safe_text(value)
 
 
 def _num(value):
     return value if isinstance(value, (int, float)) else None
+
+
+def _held_sort_key(record: dict) -> tuple[int, str]:
+    calculation_id = str(record.get("calculation_id") or "")
+    return (_HELD_SORT_ORDER.get(calculation_id, 99), calculation_id)
+
+
+def _reveal_key(calculation_id: str) -> str:
+    return f"calculation_reveal::{calculation_id}"
+
+
+def _go_to_validation(validation_id: str) -> None:
+    set_selected_validation_id(validation_id)
+    _switch_to(
+        "pages/4_Validation.py",
+        "Open Validation from the sidebar to review this validation issue.",
+    )
+
+
+def _render_held_record(record: dict) -> None:
+    calculation_id = str(record.get("calculation_id") or "")
+    explanation = _HELD_EXPLANATIONS.get(calculation_id, {})
+    title = explanation.get("title") or safe_text(record.get("source_or_fuel")) or "Held record"
+    reason = explanation.get("reason") or (
+        "Held — a required validated methodology input is unavailable in the prepared demo."
+    )
+    assurance_text = explanation.get("assurance") or (
+        "Validation identified the same prerequisite issue. The system refuses to "
+        "calculate until the method input is supported."
+    )
+
+    with st.container(border=True):
+        st.markdown(f"#### {title}")
+        st.error("Held")
+        st.write(reason)
+        st.caption(assurance_text)
+        st.caption("Validation context")
+
+        validation_links = _HELD_VALIDATION_LINKS.get(calculation_id, [])
+        if validation_links:
+            cols = st.columns(len(validation_links))
+            for idx, (validation_id, label) in enumerate(validation_links):
+                if cols[idx].button(
+                    label,
+                    key=f"held_validation_{calculation_id}_{validation_id}",
+                ):
+                    _go_to_validation(validation_id)
+
+
+def _render_advanced_details(
+    record: dict,
+    formulas: list[dict],
+    factor_record: dict | None,
+    gwp_set: dict | None,
+    consistency_check: dict,
+) -> None:
+    with st.expander("Advanced calculation details", expanded=False):
+        calculation_id = safe_text(record.get("calculation_id"))
+        linked_ids = record.get("linked_evidence_ids") if isinstance(record.get("linked_evidence_ids"), list) else []
+        workbook_location = (
+            record.get("workbook_location")
+            if isinstance(record.get("workbook_location"), dict)
+            else {}
+        )
+        formula_ids = record.get("formula_ids") if isinstance(record.get("formula_ids"), list) else []
+
+        st.write(f"Calculation ID: {calculation_id or 'Unavailable'}")
+        st.write(f"Linked evidence IDs: {', '.join(str(item) for item in linked_ids) if linked_ids else 'Unavailable'}")
+
+        if workbook_location:
+            sheet = safe_text(workbook_location.get("sheet_name")) or "Unknown"
+            cell = safe_text(workbook_location.get("cell_or_range")) or "Unknown"
+            st.write(f"Workbook location: {sheet}!{cell}")
+        else:
+            st.write("Workbook location: Unavailable")
+
+        st.write(f"Raw factor ID: {safe_text(record.get('factor_id')) or 'Unavailable'}")
+        st.write(f"Raw GWP ID: {safe_text(record.get('gwp_basis')) or 'Unavailable'}")
+        st.write(
+            "Raw formula/reconciliation rule IDs: "
+            + (", ".join(str(item) for item in formula_ids) if formula_ids else "Unavailable")
+        )
+
+        st.markdown("**Formula-library records**")
+        st.json(formulas)
+
+        st.markdown("**Emission-factor record**")
+        st.json(factor_record if isinstance(factor_record, dict) else {})
+
+        st.markdown("**GWP-set record**")
+        st.json(gwp_set if isinstance(gwp_set, dict) else {})
+
+        st.markdown("**Calculation template**")
+        st.json(resolve_calculation_template("ENERGY_BASIS_STATIONARY_COMBUSTION") or {})
+
+        st.markdown("**Non-mutating consistency-check math**")
+        st.json(consistency_check)
+
+        st.markdown("**Raw prepared calculation JSON**")
+        st.json(record)
+
+
+def _render_computed_record(record: dict, audit_setup: dict) -> None:
+    calculation_id = str(record.get("calculation_id") or "")
+    linked_ids = record.get("linked_evidence_ids") if isinstance(record.get("linked_evidence_ids"), list) else []
+    approved_evidence_id = str(linked_ids[0]) if linked_ids else ""
+
+    with st.container(border=True):
+        st.markdown("### Ready to recalculate")
+        st.markdown("#### Natural gas — October bill")
+        if approved_evidence_id:
+            st.caption(f"Approved evidence: {approved_evidence_id}")
+
+        if st.button("Run recalculation", key=f"run_recalculation_{calculation_id}", type="primary"):
+            st.session_state[_reveal_key(calculation_id)] = True
+
+        revealed = bool(st.session_state.get(_reveal_key(calculation_id), False))
+        if not revealed:
+            return
+
+        factor_record = resolve_emission_factor(safe_text(record.get("factor_id")))
+        basis = factor_energy_basis(factor_record)
+        gwp_set = resolve_gwp_set(safe_text(record.get("gwp_basis")) or None)
+        gwp_map = gwp_values(gwp_set)
+        formulas = resolve_formulas([str(item) for item in (record.get("formula_ids") or [])])
+
+        st.markdown("#### Step 1 — Activity")
+        st.metric("Activity", f"{_fmt(_num(record.get('activity_quantity')), decimals=0)} MMBtu")
+        st.caption(
+            "Source: auditor-approved evidence "
+            + (approved_evidence_id if approved_evidence_id else "Unavailable")
+        )
+        if approved_evidence_id and st.button(
+            "Open approved evidence",
+            key=f"open_approved_evidence_{calculation_id}",
+        ):
+            open_original_evidence(approved_evidence_id)
+
+        st.markdown("#### Step 2 — Emission factor")
+        st.write("EPA Emission Factors Hub 2025")
+        st.write("Stationary combustion — natural gas")
+        st.caption(f"Source: {emission_factor_library_source_label()}")
+
+        st.markdown("#### Step 3 — Per-gas emissions")
+        gas_col1, gas_col2, gas_col3 = st.columns(3)
+        gas_col1.metric("CO2", f"{_fmt(_num(record.get('co2_kg')), decimals=0)} kg")
+        gas_col2.metric("CH4", f"{_fmt(_num(record.get('ch4_kg')), decimals=1)} kg")
+        gas_col3.metric("N2O", f"{_fmt(_num(record.get('n2o_kg')), decimals=2)} kg")
+        st.caption("Per-gas mass values are derived from the selected canonical combustion factor.")
+
+        st.markdown("#### Step 4 — GWP conversion")
+        st.write(gwp_reference_label(safe_text(record.get("gwp_basis")) or None))
+        gwp_col1, gwp_col2, gwp_col3 = st.columns(3)
+        gwp_col1.metric("CO2", _fmt(_num(gwp_map.get("CO2")), decimals=0))
+        gwp_col2.metric("CH4", _fmt(_num(gwp_map.get("CH4_NON_FOSSIL")), decimals=0))
+        gwp_col3.metric("N2O", _fmt(_num(gwp_map.get("N2O")), decimals=0))
+
+        st.markdown("#### Step 5 — Recalculated result")
+        recalculated_mt = _num(record.get("recalculated_co2e_mt"))
+        st.metric("Recalculated", f"{_fmt(recalculated_mt, decimals=1)} tCO2e")
+        st.caption(
+            "Recalculated from the auditor-approved evidence baseline using the selected "
+            "canonical factor and GWP references."
+        )
+
+        st.markdown("### Reconciliation punchline")
+        workbook_mt = _num(record.get("workbook_co2e_mt"))
+        difference_mt = _num(record.get("difference_mt"))
+        variance_pct = _num(record.get("variance_percent"))
+
+        comp_col1, comp_col2 = st.columns(2)
+        comp_col1.metric("Recalculated", f"{_fmt(recalculated_mt, decimals=1)} tCO2e")
+        comp_col2.metric("Workbook", f"{_fmt(workbook_mt, decimals=1)} tCO2e")
+
+        variance_col1, variance_col2 = st.columns(2)
+        variance_col1.metric("Variance", f"{_fmt(difference_mt, decimals=1)} tCO2e")
+        variance_col2.metric("Variance %", f"{_fmt(variance_pct, decimals=0)}%")
+
+        if recalculated_mt and workbook_mt:
+            st.error(f"Workbook is {workbook_mt / recalculated_mt:,.1f}x the recalculated result.")
+
+        materiality_pct = parse_materiality_percent(audit_setup)
+        materiality_abs = parse_materiality_absolute(audit_setup)
+
+        rel_breached = (
+            variance_pct is not None
+            and materiality_pct is not None
+            and abs(variance_pct) > materiality_pct
+        )
+        abs_breached = (
+            difference_mt is not None
+            and materiality_abs is not None
+            and abs(difference_mt) > materiality_abs
+        )
+
+        if variance_pct is not None and materiality_pct is not None:
+            status = "breached" if rel_breached else "within threshold"
+            st.write(
+                f"Relative variance: {_fmt(variance_pct, decimals=0)}% versus the "
+                f"{_fmt(materiality_pct, decimals=0)}% threshold — {status}."
+            )
+
+        if difference_mt is not None and materiality_abs is not None:
+            status = "breached" if abs_breached else "within threshold"
+            st.write(
+                f"Absolute difference: {_fmt(difference_mt, decimals=1)} tCO2e versus the "
+                f"{_fmt(materiality_abs, decimals=0)} tCO2e threshold — {status}."
+            )
+
+        st.markdown("### Gap handoff")
+        st.write("This variance generated Gap GAP-003.")
+        if st.button("Open GAP-003 in Gap Analysis", key=f"open_gap_003_{calculation_id}", type="primary"):
+            set_selected_gap_ticket_id("GT-DEMO-GAP-003")
+            _switch_to(
+                "pages/6_Gap_Analysis.py",
+                "Open Gap Analysis from the sidebar to review GAP-003.",
+            )
+
+        st.caption("GAP-010 — Workbook GWP basis")
+        if st.button("Open GAP-010 in Gap Analysis", key=f"open_gap_010_{calculation_id}"):
+            set_selected_gap_ticket_id("GT-DEMO-GAP-010")
+            _switch_to(
+                "pages/6_Gap_Analysis.py",
+                "Open Gap Analysis from the sidebar to review GAP-010.",
+            )
+
+        activity = _num(record.get("activity_quantity"))
+        co2_factor = _num((basis.get("co2") or {}).get("value"))
+        ch4_factor = _num((basis.get("ch4") or {}).get("value"))
+        n2o_factor = _num((basis.get("n2o") or {}).get("value"))
+        gwp_co2 = _num(gwp_map.get("CO2"))
+        gwp_ch4 = _num(gwp_map.get("CH4_NON_FOSSIL"))
+        gwp_n2o = _num(gwp_map.get("N2O"))
+
+        consistency_check: dict = {"inputs_available": False}
+        if None not in (activity, co2_factor, ch4_factor, n2o_factor, gwp_co2, gwp_ch4, gwp_n2o):
+            co2_kg = activity * co2_factor
+            ch4_kg = activity * ch4_factor / 1000
+            n2o_kg = activity * n2o_factor / 1000
+            co2e_mt = (co2_kg * gwp_co2 + ch4_kg * gwp_ch4 + n2o_kg * gwp_n2o) / 1000
+            consistency_check = {
+                "inputs_available": True,
+                "activity_mmbtu": activity,
+                "factor_reference_label": factor_reference_label(safe_text(record.get("factor_id"))),
+                "gwp_reference_label": gwp_reference_label(safe_text(record.get("gwp_basis")) or None),
+                "calculated_co2_kg": co2_kg,
+                "calculated_ch4_kg": ch4_kg,
+                "calculated_n2o_kg": n2o_kg,
+                "calculated_recalculated_co2e_mt": co2e_mt,
+                "prepared_recalculated_co2e_mt": recalculated_mt,
+                "difference_vs_prepared": (co2e_mt - recalculated_mt) if recalculated_mt is not None else None,
+            }
+
+        _render_advanced_details(
+            record,
+            formulas=formulas,
+            factor_record=factor_record,
+            gwp_set=gwp_set,
+            consistency_check=consistency_check,
+        )
 
 
 init_session_state()
@@ -73,9 +373,6 @@ analysis_response = get_analysis_response()
 if not analysis_response:
     st.info("No prepared analysis loaded yet. Open Evidence Intake and run the prepared demo workflow.")
     st.stop()
-
-audit_setup = get_audit_setup()
-render_audit_setup_context(audit_setup)
 
 # --- Independent human-review gate (derived) ----------------------------------
 progress = get_extraction_review_progress(analysis_response, get_reviewed_extraction_fields())
@@ -93,222 +390,66 @@ if not progress["is_complete"]:
 
 approved_count = progress["approved_record_count"]
 st.success(f"Recalculated from {approved_count} auditor-approved evidence item(s).")
-st.caption(
-    "Prepared-demo values are shown as recorded; no live recomputation runs in this environment. "
-    "Formula logic, emission factors, and GWP values are resolved from the canonical libraries."
-)
 
 calculation_results = [
     item for item in (analysis_response.get("calculation_results") or []) if isinstance(item, dict)
 ]
-reconciliation_summary = (
-    analysis_response.get("reconciliation_summary")
-    if isinstance(analysis_response.get("reconciliation_summary"), dict)
-    else {}
-)
 if not calculation_results:
     st.info("No calculation results are available in this prepared dataset.")
     st.stop()
 
-st.subheader("Calculation records")
-render_calculation_table(calculation_results)
+attempted_count = len(calculation_results)
+computed_records = [
+    item for item in calculation_results if str(item.get("calculation_status") or "").strip().lower() == COMPUTED
+]
+held_records = [
+    item
+    for item in calculation_results
+    if str(item.get("calculation_status") or "").strip().lower() == NOT_COMPUTED
+]
 
-calculation_ids = [str(item.get("calculation_id")) for item in calculation_results if item.get("calculation_id")]
-selected_calculation_id = get_selected_calculation_id()
-if selected_calculation_id not in calculation_ids:
-    selected_calculation_id = calculation_ids[0]
-
-# Honor a workbook deep-link from another page.
-selected_workbook_location = get_selected_workbook_location()
-if isinstance(selected_workbook_location, dict):
-    desired_sheet = safe_text(selected_workbook_location.get("sheet_name")).strip().lower()
-    desired_cell = safe_text(selected_workbook_location.get("cell_or_range")).strip().lower()
-    for item in calculation_results:
-        loc = item.get("workbook_location") if isinstance(item.get("workbook_location"), dict) else {}
-        sheet = safe_text(loc.get("sheet_name")).strip().lower()
-        cell = safe_text(loc.get("cell_or_range")).strip().lower()
-        if desired_sheet and desired_cell and sheet == desired_sheet and cell == desired_cell:
-            selected_calculation_id = str(item.get("calculation_id"))
-            break
-
-selected_calculation_id = st.selectbox(
-    "Select calculation record",
-    options=calculation_ids,
-    index=calculation_ids.index(selected_calculation_id),
+st.subheader("Calculation queue")
+st.write(
+    f"{attempted_count} records attempted · {len(computed_records)} computed · "
+    f"{len(held_records)} held for validated input"
 )
-set_selected_calculation_id(selected_calculation_id)
 
-record = next(
-    (item for item in calculation_results if str(item.get("calculation_id")) == selected_calculation_id),
-    None,
-)
-if not record:
-    st.info("Selected calculation record could not be found.")
+queue_col1, queue_col2, queue_col3 = st.columns(3)
+queue_col1.metric("Attempted", attempted_count)
+queue_col2.metric("Computed", len(computed_records))
+queue_col3.metric("Held", len(held_records))
+
+if len(held_records) == 2:
+    st.info(
+        "Two records are intentionally held because validated methodology inputs are not ready. "
+        "Sustentra does not guess missing conversion, factor, or allocation inputs."
+    )
+else:
+    st.info(
+        f"{len(held_records)} records are intentionally held because validated methodology "
+        "inputs are not ready. Sustentra does not guess missing conversion, factor, or allocation inputs."
+    )
+
+audit_setup = get_audit_setup()
+with st.expander("Engagement context", expanded=False):
+    render_audit_setup_context(audit_setup)
+
+if held_records:
+    st.markdown("### Held for validated input")
+    for held_record in sorted(held_records, key=_held_sort_key):
+        _render_held_record(held_record)
+
+if not computed_records:
+    st.info("No computed records are available in the current prepared dataset.")
     st.stop()
 
-status = record.get("calculation_status") or record.get("status")
-st.subheader(safe_text(record.get("source_or_fuel")) or selected_calculation_id)
+computed_record = next(
+    (
+        item
+        for item in computed_records
+        if str(item.get("calculation_id") or "") == "CALC-NG-2023-010"
+    ),
+    computed_records[0],
+)
 
-if status == NOT_COMPUTED:
-    reason = safe_text(record.get("reason")) or "Required validated input is unavailable in the current demo."
-    st.warning(f"Not computed in current demo: {reason}")
-    st.caption(
-        "This record is intentionally left uncomputed because a validated method input is missing; "
-        "it is routed to Gap Analysis rather than producing an unsupported number."
-    )
-
-# --- Dynamic formula / factor / GWP resolution --------------------------------
-st.markdown("### Methodology (resolved from libraries)")
-
-formula_ids = record.get("formula_ids") if isinstance(record.get("formula_ids"), list) else []
-formulas = resolve_formulas([str(fid) for fid in formula_ids])
-if formulas:
-    for formula in formulas:
-        with st.container(border=True):
-            st.markdown(f"**{safe_text(formula.get('formula_id'))} — {safe_text(formula.get('formula_name'))}**")
-            logic = safe_text(formula.get("formula_logic"))
-            if logic:
-                st.code(logic, language="text")
-else:
-    st.caption("No formula records were referenced for this calculation.")
-
-factor_id = safe_text(record.get("factor_id"))
-factor = resolve_emission_factor(factor_id)
-gwp_basis_id = safe_text(record.get("gwp_basis")) or None
-gwp_set = resolve_gwp_set(gwp_basis_id)
-gwp_map = gwp_values(gwp_set)
-
-factor_col, gwp_col = st.columns(2)
-with factor_col:
-    st.markdown("**Emission factor**")
-    if factor:
-        basis = factor_energy_basis(factor)
-        st.caption(f"{safe_text(factor.get('fuel_name'))} ({factor_id})")
-        for gas in ("co2", "ch4", "n2o"):
-            entry = basis.get(gas) or {}
-            if entry.get("value") is not None:
-                st.write(f"{gas.upper()}: {entry['value']} {safe_text(entry.get('unit'))}")
-    else:
-        st.caption(f"Factor '{factor_id}' is not resolvable for this record (validated method required).")
-with gwp_col:
-    st.markdown("**GWP basis**")
-    if gwp_set:
-        st.caption(safe_text(gwp_set.get("gwp_set_id")))
-        for key in ("CO2", "CH4_NON_FOSSIL", "N2O"):
-            if key in gwp_map:
-                st.write(f"{key}: {gwp_map[key]}")
-    else:
-        st.caption("GWP basis is not resolvable for this record.")
-
-# --- Recalculation trail (computed records only) ------------------------------
-if status != NOT_COMPUTED and factor:
-    st.markdown("### Recalculation trail")
-    activity = _num(record.get("activity_quantity"))
-    basis = factor_energy_basis(factor)
-    co2_f = _num((basis.get("co2") or {}).get("value"))
-    ch4_f = _num((basis.get("ch4") or {}).get("value"))
-    n2o_f = _num((basis.get("n2o") or {}).get("value"))
-    gwp_co2 = _num(gwp_map.get("CO2"))
-    gwp_ch4 = _num(gwp_map.get("CH4_NON_FOSSIL"))
-    gwp_n2o = _num(gwp_map.get("N2O"))
-
-    if None not in (activity, co2_f, ch4_f, n2o_f, gwp_co2, gwp_ch4, gwp_n2o):
-        co2_kg = activity * co2_f
-        ch4_kg = activity * ch4_f / 1000
-        n2o_kg = activity * n2o_f / 1000
-        co2e_kg = co2_kg * gwp_co2 + ch4_kg * gwp_ch4 + n2o_kg * gwp_n2o
-        co2e_mt = co2e_kg / 1000
-
-        st.markdown(
-            "Source evidence → extracted activity → normalized activity → selected factor → "
-            "gas-level mass → GWP conversion → recalculated CO2e."
-        )
-        st.code(
-            "\n".join(
-                [
-                    f"activity            = {activity:,.2f} {safe_text(record.get('activity_unit'))}",
-                    f"CO2 (kg)            = {activity:,.2f} * {co2_f} = {co2_kg:,.2f}",
-                    f"CH4 (kg)            = {activity:,.2f} * {ch4_f} / 1000 = {ch4_kg:,.4f}",
-                    f"N2O (kg)            = {activity:,.2f} * {n2o_f} / 1000 = {n2o_kg:,.4f}",
-                    f"CO2e (kg)           = {co2_kg:,.2f}*{gwp_co2} + {ch4_kg:,.4f}*{gwp_ch4} + {n2o_kg:,.4f}*{gwp_n2o}",
-                    f"                    = {co2e_kg:,.5f}",
-                    f"CO2e (metric tons)  = {co2e_kg:,.5f} / 1000 = {co2e_mt:,.5f}",
-                ]
-            ),
-            language="text",
-        )
-
-        prepared = _num(record.get("recalculated_co2e_mt"))
-        if prepared is not None and abs(prepared - co2e_mt) <= 1e-3:
-            st.success(
-                f"Recalculated total {co2e_mt:,.5f} tCO2e matches the prepared record "
-                f"({prepared:,.5f} tCO2e)."
-            )
-        elif prepared is not None:
-            st.error(
-                f"Recalculated total {co2e_mt:,.5f} tCO2e differs from the prepared record "
-                f"({prepared:,.5f} tCO2e)."
-            )
-
-    trail_cols = st.columns(3)
-    trail_cols[0].metric("Recalculated CO2e (mt)", _fmt(record.get("recalculated_co2e_mt")))
-    trail_cols[1].metric("Workbook CO2e (mt)", _fmt(record.get("workbook_co2e_mt")))
-    trail_cols[2].metric("Variance (mt)", _fmt(record.get("difference_mt")))
-
-# --- Reconciliation punchline -------------------------------------------------
-st.markdown("### Reconciliation")
-reported = _num(reconciliation_summary.get("reported_scope_1_mtco2e"))
-recalculated = _num(reconciliation_summary.get("recalculated_scope_1_mtco2e"))
-abs_diff = _num(reconciliation_summary.get("absolute_difference_mtco2e"))
-variance_pct = _num(reconciliation_summary.get("variance_percent"))
-
-materiality_pct = parse_materiality_percent(audit_setup)
-materiality_abs = parse_materiality_absolute(audit_setup)
-
-recon_cols = st.columns(4)
-recon_cols[0].metric("Reported Scope 1 (mt)", _fmt(reported))
-recon_cols[1].metric("Recalculated Scope 1 (mt)", _fmt(recalculated))
-recon_cols[2].metric("Absolute difference (mt)", _fmt(abs_diff))
-recon_cols[3].metric("Variance %", f"{variance_pct:g}%" if variance_pct is not None else "—")
-
-threshold_bits = []
-if materiality_pct is not None:
-    threshold_bits.append(f"{materiality_pct:g}% relative")
-if materiality_abs is not None:
-    threshold_bits.append(f"{materiality_abs:g} tCO2e absolute")
-threshold_text = " and ".join(threshold_bits) if threshold_bits else "the configured materiality thresholds"
-
-exceeds_pct = variance_pct is not None and materiality_pct is not None and abs(variance_pct) > materiality_pct
-exceeds_abs = abs_diff is not None and materiality_abs is not None and abs(abs_diff) > materiality_abs
-if exceeds_pct or exceeds_abs:
-    st.error(
-        f"The reconciliation variance exceeds {threshold_text}. This is a material difference "
-        "requiring a gap finding."
-    )
-else:
-    st.info(f"Materiality thresholds applied from Audit Setup: {threshold_text}.")
-
-# --- Gap handoff --------------------------------------------------------------
-st.markdown("### Findings handoff")
-gap_col1, gap_col2 = st.columns(2)
-with gap_col1:
-    st.markdown("**GAP-003 — October natural-gas overstatement**")
-    st.caption("The workbook records 10x the source-bill quantity for October; routed to Gap Analysis.")
-    if st.button("Open GAP-003 in Gap Analysis", type="primary"):
-        set_selected_gap_ticket_id("GT-DEMO-GAP-003")
-        _switch_to(
-            "pages/6_Gap_Analysis.py",
-            "Open Gap Analysis from the sidebar to review GAP-003.",
-        )
-with gap_col2:
-    st.markdown("**GAP-010 — Workbook GWP basis**")
-    st.caption("The workbook applies a GWP basis that differs from the engagement requirement.")
-    if st.button("Open GAP-010 in Gap Analysis"):
-        set_selected_gap_ticket_id("GT-DEMO-GAP-010")
-        _switch_to(
-            "pages/6_Gap_Analysis.py",
-            "Open Gap Analysis from the sidebar to review GAP-010.",
-        )
-
-with st.expander("Advanced calculation JSON", expanded=False):
-    st.json(record)
+_render_computed_record(computed_record, audit_setup)

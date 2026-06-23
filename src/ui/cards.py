@@ -81,7 +81,7 @@ def render_gap_card(ticket: dict, key_prefix: str) -> dict[str, bool]:
             use_container_width=True,
         )
         action_ask_reg = action_col4.button(
-            "Ask Regulatory Assistant",
+            "Ask Sustentra AI Assistant",
             key=f"{key_prefix}_ask_reg",
             use_container_width=True,
         )

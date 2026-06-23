@@ -51,7 +51,7 @@ def test_all_pages_compile() -> None:
         "pages/4_Validation.py",
         "pages/5_Calculation_and_Reconciliation.py",
         "pages/6_Gap_Analysis.py",
-        "pages/7_Regulatory_Assistant.py",
+        "pages/7_Sustentra_AI_Assistant.py",
     ]
     for target in targets:
         py_compile.compile(target, doraise=True)
@@ -64,12 +64,13 @@ def test_evidence_intake_has_prepared_workflow_button_and_disclosure() -> None:
     assert "current build uses prepared" in source.lower()
 
 
-def test_regulatory_assistant_disclaimer_and_no_mode_selector() -> None:
-    source = Path("pages/7_Regulatory_Assistant.py").read_text(encoding="utf-8")
+def test_sustentra_ai_assistant_disclaimer_and_no_live_rag_strings() -> None:
+    source = Path("pages/7_Sustentra_AI_Assistant.py").read_text(encoding="utf-8")
 
     assert "does not provide legal advice" in source
-    assert "Citation review warning" in source
-    assert "Prepared demo answer shown because the live regulatory service is unavailable." in source
+    assert "query_rag" not in source
+    assert "get_auditor_chat_mode" not in source
+    assert "Live service" not in source
     assert "Chat mode" not in source
 
 
