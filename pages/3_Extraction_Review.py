@@ -55,7 +55,6 @@ from src.ui.workflow import render_prepared_demo_disclosure
 
 ASSET_MANIFEST_PATH = Path("data/demo/mock_outputs/evidence_assets_manifest.json")
 PANE_HEIGHT = 620
-MAX_WORKSPACE_WIDTH_PX = 1800
 
 _BUCKET_EMOJI = {BUCKET_PASS: "\U0001f7e2", BUCKET_NEEDS_REVIEW: "\U0001f7e0", BUCKET_FAIL: "\U0001f534"}
 _STATUS_COLOR = {
@@ -70,22 +69,30 @@ _STATUS_COLOR = {
 def _inject_page3_layout_style() -> None:
     """Scope layout tweaks to Page 3 to maximize desktop usability."""
     st.markdown(
-        f"""
+        """
         <style>
-        [data-testid="stAppViewContainer"] .main .block-container {{
-            max-width: {MAX_WORKSPACE_WIDTH_PX}px;
-            padding-left: 1.1rem;
-            padding-right: 1.1rem;
-            padding-top: 1rem;
-        }}
+        div[data-testid="stAppViewContainer"] div[data-testid="stMainBlockContainer"],
+        section.main .block-container {
+            width: 100% !important;
+            max-width: none !important;
+            box-sizing: border-box !important;
+            padding-left: clamp(0.75rem, 1.2vw, 1.5rem) !important;
+            padding-right: clamp(0.75rem, 1.2vw, 1.5rem) !important;
+            padding-top: 1rem !important;
+        }
 
-        [data-testid="stAppViewContainer"] div[data-testid="stButton"] > button,
-        [data-testid="stAppViewContainer"] div[data-testid="stButton"] > button p {{
+        /* Let pane content shrink naturally within column widths. */
+        div[data-testid="stHorizontalBlock"] > div {
+            min-width: 0 !important;
+        }
+
+        div[data-testid="stButton"] > button,
+        div[data-testid="stButton"] > button p {
             white-space: normal;
             word-break: normal;
             overflow-wrap: normal;
             line-height: 1.25;
-        }}
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -432,7 +439,7 @@ def _render_workspace() -> None:
 
     _render_bulk_toolbar(grouped, reviewed_all)
 
-    left_col, source_col, fields_col = st.columns([2.5, 5.5, 5.5], gap="medium")
+    left_col, source_col, fields_col = st.columns([3.0, 6.5, 6.5], gap="small")
 
     # --- Left rail: confidence groups -----------------------------------------
     with left_col:
@@ -547,6 +554,11 @@ def _render_workspace() -> None:
         else:
             st.info("Open Calculation & Reconciliation from the sidebar to continue.")
 
+
+st.set_page_config(
+    page_title="Extraction Review",
+    layout="wide",
+)
 
 init_session_state()
 _inject_page3_layout_style()

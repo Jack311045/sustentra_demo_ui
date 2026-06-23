@@ -255,6 +255,51 @@ def _page_identifiers() -> set[str]:
     return identifiers
 
 
+def _top_level_st_calls() -> list[ast.Call]:
+    tree = ast.parse(_page_source())
+    calls: list[ast.Call] = []
+    for node in tree.body:
+        if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Call):
+            continue
+        call = node.value
+        func = call.func
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) and func.value.id == "st":
+            calls.append(call)
+    return calls
+
+
+def _main_pane_columns_call() -> ast.Call | None:
+    tree = ast.parse(_page_source())
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
+            continue
+        call = node.value
+        func = call.func
+        if not (
+            isinstance(func, ast.Attribute)
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "st"
+            and func.attr == "columns"
+        ):
+            continue
+
+        if not node.targets:
+            continue
+        target = node.targets[0]
+        if not isinstance(target, ast.Tuple):
+            continue
+        names = [elt.id for elt in target.elts if isinstance(elt, ast.Name)]
+        if names == ["left_col", "source_col", "fields_col"]:
+            return call
+    return None
+
+
+def _num(node: ast.AST) -> float:
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        return float(node.value)
+    raise AssertionError("Expected numeric literal")
+
+
 def test_page_compiles() -> None:
     py_compile.compile(str(PAGE_3), doraise=True)
 
@@ -268,16 +313,53 @@ def test_page_has_no_rerun_or_wrap_style() -> None:
 
 def test_page_uses_three_pane_layout_and_no_five_column_action_row() -> None:
     source = _page_source()
-    assert "st.columns([2.5, 5.5, 5.5]" in source
-    assert "st.columns([2, 4, 4]" not in source
+    call = _main_pane_columns_call()
+    assert call is not None, "Expected the main three-pane st.columns assignment"
+
+    assert call.args and isinstance(call.args[0], ast.List)
+    weights = [_num(elt) for elt in call.args[0].elts]
+    assert len(weights) == 3
+
+    total = sum(weights)
+    left_share = weights[0] / total
+    source_share = weights[1] / total
+    fields_share = weights[2] / total
+
+    assert 0.18 <= left_share <= 0.21
+    assert 0.39 <= source_share <= 0.41
+    assert 0.39 <= fields_share <= 0.41
+    assert abs(source_share - fields_share) < 0.01
+
+    gap_kw = next((kw for kw in call.keywords if kw.arg == "gap"), None)
+    assert gap_kw is not None
+    assert isinstance(gap_kw.value, ast.Constant)
+    assert gap_kw.value.value == "small"
+
     assert "st.columns(5)" not in source
 
 
 def test_page_has_scoped_width_treatment() -> None:
     source = _page_source()
-    assert "MAX_WORKSPACE_WIDTH_PX" in source
-    assert "max-width" in source
+    assert 'data-testid="stMainBlockContainer"' in source
+    assert "section.main .block-container" in source
+    assert "max-width: none" in source
+    assert "max-width: 1800" not in source
+    assert "MAX_WORKSPACE_WIDTH_PX" not in source
     assert "_inject_page3_layout_style" in source
+
+
+def test_page_has_set_page_config_wide_as_first_top_level_streamlit_call() -> None:
+    calls = _top_level_st_calls()
+    assert calls, "Expected top-level streamlit calls"
+
+    first = calls[0]
+    assert isinstance(first.func, ast.Attribute)
+    assert first.func.attr == "set_page_config"
+
+    kwargs = {kw.arg: kw.value for kw in first.keywords if kw.arg}
+    assert "layout" in kwargs
+    assert isinstance(kwargs["layout"], ast.Constant)
+    assert kwargs["layout"].value == "wide"
 
 
 def test_page_uses_callbacks_for_field_actions() -> None:
@@ -297,6 +379,12 @@ def test_page_has_toolbar_bulk_actions_and_risky_acks() -> None:
     assert "toolbar_ack_needs" in source
     assert "toolbar_ack_fail" in source
     assert "toolbar_ack_pass" not in source
+
+
+def test_page_keeps_hard_gate_navigation_behavior() -> None:
+    source = _page_source()
+    assert "Proceed to Calculation & Reconciliation" in source
+    assert "pages/5_Calculation_and_Reconciliation.py" in source
 
 
 def test_left_rail_is_selector_only_no_bulk_copy() -> None:
