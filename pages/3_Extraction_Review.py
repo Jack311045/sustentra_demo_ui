@@ -1,11 +1,15 @@
 """Extraction Review (Page 3).
 
-Extraction-review half of Act 1 plus the hard human-review gate. This page is
-strictly read-only with respect to ``analysis_response`` -- it never calls
+Compact, auditor-friendly three-pane review workspace plus the hard
+human-review gate. This page is strictly read-only with respect to
+``analysis_response`` -- it never calls
 ``set_analysis_response``/``MockApiClient``/``adapt_analysis_response`` and never
 mutates the prepared extraction. All reviewer decisions live in the
 ``reviewed_extraction_fields`` overlay, and review progress / the proceed gate
 are derived on every rerun (there is no persisted ``review_complete``).
+
+Interaction is fragment-scoped and driven entirely by ``on_click`` callbacks, so
+no ``st.rerun()`` is used anywhere on this page.
 """
 
 from __future__ import annotations
@@ -22,48 +26,44 @@ from src.ui.extraction_review import (
     BUCKET_NEEDS_REVIEW,
     BUCKET_PASS,
     UNCONFIRMED_STATUS,
-    field_confidence_bucket,
+    build_bulk_accept_update,
     get_extraction_review_progress,
     get_field_review_status,
     get_internal_routing_records,
     get_reviewable_evidence_records,
-    passing_field_keys,
     record_confidence_bucket,
+    record_display_name,
+    record_period_label,
     resolve_field_source_reference,
 )
-from src.ui.formatting import safe_text
+from src.ui.formatting import format_display_value, safe_text
 from src.ui.state import (
     add_auditor_extraction_field,
     get_analysis_response,
-    get_extraction_review_bulk_acknowledged,
     get_focused_source_field,
     get_reviewed_extraction_fields,
     get_selected_evidence_id,
     init_session_state,
     open_workbook_location,
-    set_extraction_review_bulk_acknowledged,
     set_focused_source_field,
     set_reviewed_extraction_field,
+    set_reviewed_extraction_fields,
     set_selected_evidence_id,
 )
 from src.ui.workflow import render_prepared_demo_disclosure
 
 
 ASSET_MANIFEST_PATH = Path("data/demo/mock_outputs/evidence_assets_manifest.json")
+PANE_HEIGHT = 560
 
-_BUCKET_COLOR = {BUCKET_PASS: "green", BUCKET_NEEDS_REVIEW: "orange", BUCKET_FAIL: "red"}
-
-
-def _inject_button_style() -> None:
-    # Prevent mid-word wrapping inside action buttons.
-    st.markdown(
-        """
-        <style>
-        div[data-testid="stButton"] button p { white-space: nowrap; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+_BUCKET_EMOJI = {BUCKET_PASS: "\U0001f7e2", BUCKET_NEEDS_REVIEW: "\U0001f7e0", BUCKET_FAIL: "\U0001f534"}
+_STATUS_COLOR = {
+    "Accepted": "green",
+    "Edited": "green",
+    "Rejected": "red",
+    "Needs clarification": "orange",
+    UNCONFIRMED_STATUS: "gray",
+}
 
 
 def _load_asset_manifest() -> dict[str, dict]:
@@ -87,9 +87,14 @@ def _friendly_field_label(field_key: str) -> str:
     return safe_text(field_key).replace("_", " ").strip().title() or "Field"
 
 
+def _status_chip(status: str) -> str:
+    color = _STATUS_COLOR.get(status, "gray")
+    return f":{color}[{status}]"
+
+
 def _confidence_badge(bucket: str) -> str:
-    color = _BUCKET_COLOR.get(bucket, "gray")
-    return f":{color}[{BUCKET_LABELS.get(bucket, 'Needs review')}]"
+    emoji = _BUCKET_EMOJI.get(bucket, _BUCKET_EMOJI[BUCKET_NEEDS_REVIEW])
+    return f"{emoji} {BUCKET_LABELS.get(bucket, BUCKET_LABELS[BUCKET_NEEDS_REVIEW])}"
 
 
 def _find_linked_calculation(analysis_response: dict, evidence_id: str) -> dict | None:
@@ -102,217 +107,387 @@ def _find_linked_calculation(analysis_response: dict, evidence_id: str) -> dict 
     return None
 
 
+def _unconfirmed_field_count(records: list[dict], reviewed_all: dict) -> int:
+    total = 0
+    for record in records:
+        evidence_id = safe_text(record.get("evidence_id"))
+        reviewed_map = reviewed_all.get(evidence_id) if isinstance(reviewed_all.get(evidence_id), dict) else {}
+        for field_key in record.get("extracted_fields") or {}:
+            if get_field_review_status(reviewed_map, field_key) == UNCONFIRMED_STATUS:
+                total += 1
+    return total
+
+
+# --- Callbacks (mutate overlay only; fragment reruns automatically) -----------
+def _cb_select_record(evidence_id: str) -> None:
+    set_selected_evidence_id(evidence_id)
+    set_focused_source_field(None, None)
+
+
+def _cb_set_status(evidence_id: str, field_key: str, status: str) -> None:
+    set_reviewed_extraction_field(evidence_id, field_key, {"status": status})
+
+
+def _cb_focus_source(evidence_id: str, field_key: str) -> None:
+    set_focused_source_field(evidence_id, field_key)
+
+
+def _cb_start_edit(evidence_id: str, field_key: str) -> None:
+    st.session_state[f"editing_{evidence_id}_{field_key}"] = True
+
+
+def _cb_cancel_edit(evidence_id: str, field_key: str) -> None:
+    st.session_state[f"editing_{evidence_id}_{field_key}"] = False
+
+
+def _cb_save_edit(evidence_id: str, field_key: str, input_key: str) -> None:
+    new_value = st.session_state.get(input_key, "")
+    set_reviewed_extraction_field(
+        evidence_id, field_key, {"status": "Edited", "edited_value": new_value}
+    )
+    st.session_state[f"editing_{evidence_id}_{field_key}"] = False
+
+
+def _cb_bulk_accept(records: list[dict]) -> None:
+    current = get_reviewed_extraction_fields()
+    updated = build_bulk_accept_update(current, records, only_unconfirmed=True)
+    set_reviewed_extraction_fields(updated)
+
+
+def _cb_add_field(evidence_id: str, key_input: str, value_input: str) -> None:
+    clean_key = safe_text(st.session_state.get(key_input, "")).strip().lower().replace(" ", "_")
+    if not clean_key:
+        st.session_state["_add_field_error"] = "Enter a field name to add an auditor field."
+        return
+    st.session_state.pop("_add_field_error", None)
+    add_auditor_extraction_field(evidence_id, clean_key, st.session_state.get(value_input, ""))
+
+
+# --- Field cards --------------------------------------------------------------
+def _render_field_card(
+    evidence_id: str,
+    field_key: str,
+    raw_value: object,
+    reviewed_map: dict,
+    *,
+    auditor_added: bool = False,
+) -> None:
+    status = get_field_review_status(reviewed_map, field_key)
+    entry = reviewed_map.get(field_key) if isinstance(reviewed_map.get(field_key), dict) else {}
+    current_value = entry.get("edited_value") if entry.get("edited_value") is not None else raw_value
+    editing = bool(st.session_state.get(f"editing_{evidence_id}_{field_key}", False))
+    input_key = f"editinput_{evidence_id}_{field_key}"
+
+    with st.container(border=True):
+        header = st.columns([3, 2])
+        suffix = " \u00b7 auditor added" if auditor_added else ""
+        header[0].markdown(f"**{_friendly_field_label(field_key)}**{suffix}")
+        header[1].markdown(_status_chip(status))
+
+        if editing:
+            st.text_input(
+                "Edit value",
+                value=safe_text(current_value),
+                key=input_key,
+                label_visibility="collapsed",
+            )
+            edit_cols = st.columns(2)
+            edit_cols[0].button(
+                "Save",
+                key=f"save_{evidence_id}_{field_key}",
+                type="primary",
+                use_container_width=True,
+                on_click=_cb_save_edit,
+                args=(evidence_id, field_key, input_key),
+            )
+            edit_cols[1].button(
+                "Cancel",
+                key=f"canceledit_{evidence_id}_{field_key}",
+                use_container_width=True,
+                on_click=_cb_cancel_edit,
+                args=(evidence_id, field_key),
+            )
+            return
+
+        display_value = format_display_value(current_value)
+        st.write(display_value if display_value else "\u2014")
+
+        action_cols = st.columns(3)
+        action_cols[0].button(
+            "Accept",
+            key=f"accept_{evidence_id}_{field_key}",
+            type="primary",
+            use_container_width=True,
+            on_click=_cb_set_status,
+            args=(evidence_id, field_key, "Accepted"),
+        )
+        action_cols[1].button(
+            "Edit",
+            key=f"edit_{evidence_id}_{field_key}",
+            use_container_width=True,
+            on_click=_cb_start_edit,
+            args=(evidence_id, field_key),
+        )
+        action_cols[2].button(
+            "Reject",
+            key=f"reject_{evidence_id}_{field_key}",
+            use_container_width=True,
+            on_click=_cb_set_status,
+            args=(evidence_id, field_key, "Rejected"),
+        )
+
+        popover = getattr(st, "popover", None)
+        more_ctx = popover("More", use_container_width=True) if callable(popover) else st.expander("More")
+        with more_ctx:
+            st.button(
+                "Mark unclear",
+                key=f"unclear_{evidence_id}_{field_key}",
+                use_container_width=True,
+                on_click=_cb_set_status,
+                args=(evidence_id, field_key, "Needs clarification"),
+            )
+            st.button(
+                "View source",
+                key=f"viewsrc_{evidence_id}_{field_key}",
+                use_container_width=True,
+                on_click=_cb_focus_source,
+                args=(evidence_id, field_key),
+            )
+
+
+def _render_left_group(
+    bucket: str,
+    records: list[dict],
+    selected_id: str,
+    asset_manifest: dict,
+    reviewed_all: dict,
+) -> None:
+    label = BUCKET_LABELS[bucket]
+    emoji = _BUCKET_EMOJI[bucket]
+    expanded = bucket != BUCKET_PASS
+    with st.expander(f"{emoji} {label} ({len(records)})", expanded=expanded):
+        if not records:
+            st.caption("No evidence in this group.")
+            return
+
+        unconfirmed = _unconfirmed_field_count(records, reviewed_all)
+        if bucket == BUCKET_PASS:
+            st.button(
+                f"Confirm all Pass fields ({unconfirmed})",
+                key="bulk_pass",
+                disabled=unconfirmed == 0,
+                use_container_width=True,
+                on_click=_cb_bulk_accept,
+                args=(records,),
+            )
+        else:
+            ack = st.checkbox(
+                f"I have reviewed these {label.lower()} fields and accept them.",
+                key=f"bulk_ack_{bucket}",
+            )
+            st.button(
+                f"Accept all {unconfirmed} field(s) anyway",
+                key=f"bulk_{bucket}",
+                disabled=not ack or unconfirmed == 0,
+                use_container_width=True,
+                on_click=_cb_bulk_accept,
+                args=(records,),
+            )
+
+        for record in records:
+            evidence_id = safe_text(record.get("evidence_id"))
+            period = record_period_label(record)
+            name = record_display_name(record, asset_manifest.get(evidence_id, {}))
+            row_label = f"{_BUCKET_EMOJI[bucket]} {name}"
+            if period:
+                row_label += f" \u00b7 {period}"
+            st.button(
+                row_label,
+                key=f"select_{bucket}_{evidence_id}",
+                type="primary" if evidence_id == selected_id else "secondary",
+                use_container_width=True,
+                on_click=_cb_select_record,
+                args=(evidence_id,),
+            )
+
+
+def _render_workspace() -> None:
+    analysis_response = get_analysis_response()
+    reviewable_records = get_reviewable_evidence_records(analysis_response)
+    asset_manifest = _load_asset_manifest()
+    reviewed_all = get_reviewed_extraction_fields()
+    progress = get_extraction_review_progress(analysis_response, reviewed_all)
+
+    record_ids = [safe_text(item.get("evidence_id")) for item in reviewable_records]
+    selected_id = get_selected_evidence_id()
+    if selected_id not in record_ids:
+        selected_id = record_ids[0]
+        set_selected_evidence_id(selected_id)
+
+    selected_record = next(
+        (r for r in reviewable_records if safe_text(r.get("evidence_id")) == selected_id),
+        reviewable_records[0],
+    )
+    selected_asset = asset_manifest.get(selected_id, {})
+    reviewed_map = get_reviewed_extraction_fields(selected_id)
+    focused = get_focused_source_field()
+    focused_field = focused.get("field_key") if focused.get("evidence_id") == selected_id else None
+
+    # Compact progress strip.
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("Fields", progress["total_fields"])
+    metric_cols[1].metric("Decided", progress["confirmed_fields"])
+    metric_cols[2].metric("Remaining", progress["unconfirmed_fields"])
+    metric_cols[3].metric(
+        "Evidence items",
+        f"{progress['completed_record_count']}/{progress['reviewable_record_count']}",
+    )
+    if progress["total_fields"]:
+        st.progress(progress["confirmed_fields"] / progress["total_fields"])
+
+    # Record-level confidence badge (shown once).
+    selected_bucket = record_confidence_bucket(selected_record)
+    selected_period = record_period_label(selected_record)
+    header_line = f"**{record_display_name(selected_record, selected_asset)}** \u2014 {_confidence_badge(selected_bucket)}"
+    if selected_period:
+        header_line += f" \u00b7 {selected_period}"
+    st.markdown(header_line)
+
+    grouped: dict[str, list[dict]] = {BUCKET_FAIL: [], BUCKET_NEEDS_REVIEW: [], BUCKET_PASS: []}
+    for record in reviewable_records:
+        grouped[record_confidence_bucket(record)].append(record)
+    internal_records = get_internal_routing_records(analysis_response)
+
+    left_col, source_col, fields_col = st.columns([2, 4, 4], gap="medium")
+
+    # --- Left rail: confidence groups -----------------------------------------
+    with left_col:
+        with st.container(height=PANE_HEIGHT, border=True):
+            st.markdown("**Evidence by confidence**")
+            for bucket in (BUCKET_FAIL, BUCKET_NEEDS_REVIEW, BUCKET_PASS):
+                _render_left_group(bucket, grouped[bucket], selected_id, asset_manifest, reviewed_all)
+            if internal_records:
+                with st.expander(f"Internal routing ({len(internal_records)})", expanded=False):
+                    st.caption("Routing/index documents are read-only and excluded from the gate.")
+                    for record in internal_records:
+                        st.write(
+                            f"- {safe_text(record.get('evidence_id'))}: "
+                            f"{safe_text(record.get('document_type'))}"
+                        )
+
+    # --- Source pane ----------------------------------------------------------
+    with source_col:
+        with st.container(height=PANE_HEIGHT, border=True):
+            st.markdown("**Source evidence**")
+            if focused_field:
+                ref = resolve_field_source_reference(selected_record, selected_asset, focused_field)
+                with st.container(border=True):
+                    st.caption("Focused source reference")
+                    st.markdown(f"**{_friendly_field_label(focused_field)}**")
+                    if ref.get("page_number") is not None:
+                        st.caption(f"Page {ref['page_number']}")
+                    if ref.get("source_snippet"):
+                        st.write(ref["source_snippet"])
+            render_document_preview(selected_asset, selected_record)
+
+    # --- Fields pane ----------------------------------------------------------
+    with fields_col:
+        with st.container(height=PANE_HEIGHT, border=True):
+            st.markdown("**Extracted fields**")
+            extracted_fields = selected_record.get("extracted_fields")
+            if not isinstance(extracted_fields, dict) or not extracted_fields:
+                st.info("No extracted fields are available for this evidence item.")
+            else:
+                for field_key, raw_value in extracted_fields.items():
+                    _render_field_card(selected_id, field_key, raw_value, reviewed_map)
+
+            # Auditor-added overlay fields (not part of the prepared extraction).
+            prepared_keys = set(extracted_fields) if isinstance(extracted_fields, dict) else set()
+            auditor_keys = [
+                key
+                for key, entry in reviewed_map.items()
+                if isinstance(entry, dict) and entry.get("auditor_added") and key not in prepared_keys
+            ]
+            if auditor_keys:
+                st.caption("Auditor-added fields")
+                for field_key in auditor_keys:
+                    base_value = reviewed_map[field_key].get("edited_value")
+                    _render_field_card(
+                        selected_id, field_key, base_value, reviewed_map, auditor_added=True
+                    )
+
+            # Neutral workbook link (no mismatch/gap framing on this page).
+            linked_calc = _find_linked_calculation(analysis_response, selected_id)
+            if linked_calc:
+                location = (
+                    linked_calc.get("workbook_location")
+                    if isinstance(linked_calc.get("workbook_location"), dict)
+                    else {}
+                )
+                sheet = safe_text(location.get("sheet_name"))
+                cell = safe_text(location.get("cell_or_range"))
+                if sheet and cell:
+                    st.caption(f"Linked to workbook: {sheet}!{cell}")
+                    st.button(
+                        "Open workbook location",
+                        key=f"wb_{selected_id}",
+                        on_click=open_workbook_location,
+                        args=({"sheet_name": sheet, "cell_or_range": cell},),
+                    )
+
+            with st.expander("+ Add field", expanded=False):
+                key_input = f"addkey_{selected_id}"
+                val_input = f"addval_{selected_id}"
+                st.text_input("Field name", key=key_input)
+                st.text_input("Field value", key=val_input)
+                st.button(
+                    "Add field",
+                    key=f"addbtn_{selected_id}",
+                    on_click=_cb_add_field,
+                    args=(selected_id, key_input, val_input),
+                )
+                if st.session_state.get("_add_field_error"):
+                    st.warning(st.session_state["_add_field_error"])
+
+    # --- Hard human-review gate (derived) -------------------------------------
+    st.divider()
+    if progress["is_complete"]:
+        st.success("All reviewable fields have a decision. You can proceed to Calculation & Reconciliation.")
+    else:
+        st.warning(
+            f"{progress['unconfirmed_fields']} field(s) still need a decision before you can proceed."
+        )
+
+    if st.button(
+        "Proceed to Calculation & Reconciliation",
+        type="primary",
+        disabled=not progress["is_complete"],
+        key="proceed_to_calculation",
+    ):
+        switch_page = getattr(st, "switch_page", None)
+        if callable(switch_page):
+            try:
+                switch_page("pages/5_Calculation_and_Reconciliation.py")
+            except Exception:
+                st.info("Open Calculation & Reconciliation from the sidebar to continue.")
+        else:
+            st.info("Open Calculation & Reconciliation from the sidebar to continue.")
+
+
 init_session_state()
-_inject_button_style()
 st.title("Extraction Review")
 st.caption("Confirm prepared extracted fields against the source evidence before any calculation runs.")
 render_prepared_demo_disclosure()
 
-analysis_response = get_analysis_response()
-if not analysis_response:
+_analysis_response = get_analysis_response()
+if not _analysis_response:
     st.info("No prepared analysis loaded yet. Open Evidence Intake and run the prepared demo workflow.")
     st.stop()
 
-reviewable_records = get_reviewable_evidence_records(analysis_response)
-if not reviewable_records:
+if not get_reviewable_evidence_records(_analysis_response):
     st.info("No reviewable evidence records are available in the prepared dataset.")
     st.stop()
 
-reviewed_all = get_reviewed_extraction_fields()
-progress = get_extraction_review_progress(analysis_response, reviewed_all)
-group_counts = progress["group_counts"]
-
-# --- Review progress + confidence groups --------------------------------------
-st.subheader("Review progress")
-prog_cols = st.columns(3)
-prog_cols[0].metric("Fields to review", progress["total_fields"])
-prog_cols[1].metric("Confirmed", progress["confirmed_fields"])
-prog_cols[2].metric("Remaining", progress["unconfirmed_fields"])
-if progress["total_fields"]:
-    st.progress(progress["confirmed_fields"] / progress["total_fields"])
-
-group_cols = st.columns(3)
-group_cols[0].metric("Pass", group_counts.get(BUCKET_PASS, 0))
-group_cols[1].metric("Needs review", group_counts.get(BUCKET_NEEDS_REVIEW, 0))
-group_cols[2].metric("Fail", group_counts.get(BUCKET_FAIL, 0))
-
-# Group reviewable records by worst-condition bucket.
-grouped: dict[str, list[dict]] = {BUCKET_PASS: [], BUCKET_NEEDS_REVIEW: [], BUCKET_FAIL: []}
-for record in reviewable_records:
-    grouped[record_confidence_bucket(record)].append(record)
-
-record_ids = [safe_text(item.get("evidence_id")) for item in reviewable_records]
-selected_id = get_selected_evidence_id()
-if selected_id not in record_ids:
-    selected_id = record_ids[0]
-    set_selected_evidence_id(selected_id)
-
-st.subheader("Evidence by extraction confidence")
-for bucket in (BUCKET_FAIL, BUCKET_NEEDS_REVIEW, BUCKET_PASS):
-    records = grouped[bucket]
-    label = BUCKET_LABELS[bucket]
-    with st.expander(f"{label} ({len(records)})", expanded=bucket != BUCKET_PASS):
-        if not records:
-            st.caption("No evidence in this group.")
-            continue
-        for record in records:
-            evidence_id = safe_text(record.get("evidence_id"))
-            doc_type = safe_text(record.get("document_type")) or evidence_id
-            is_selected = evidence_id == selected_id
-            button_label = f"{'● ' if is_selected else ''}{evidence_id} — {doc_type}"
-            if st.button(button_label, key=f"select_{bucket}_{evidence_id}", use_container_width=True):
-                set_selected_evidence_id(evidence_id)
-                set_focused_source_field(None, None)
-                st.rerun()
-
-internal_records = get_internal_routing_records(analysis_response)
-if internal_records:
-    with st.expander(f"Internal routing documents ({len(internal_records)})", expanded=False):
-        st.caption("Routing/index documents are excluded from review counts and the proceed gate.")
-        for record in internal_records:
-            st.write(f"- {safe_text(record.get('evidence_id'))}: {safe_text(record.get('document_type'))}")
-
-# --- Selected record detail ---------------------------------------------------
-selected_record = next(
-    (r for r in reviewable_records if safe_text(r.get("evidence_id")) == selected_id),
-    None,
-)
-if not selected_record:
-    st.info("Select an evidence record above to begin review.")
-    st.stop()
-
-asset_manifest = _load_asset_manifest()
-selected_asset = asset_manifest.get(selected_id, {})
-reviewed_map = get_reviewed_extraction_fields(selected_id)
-focused = get_focused_source_field()
-focused_field = focused.get("field_key") if focused.get("evidence_id") == selected_id else None
-
-st.divider()
-st.subheader(f"{selected_id} — {safe_text(selected_record.get('document_type'))}")
-
-left_col, right_col = st.columns([11, 9])
-with left_col:
-    st.markdown("**Original / source document**")
-    if focused_field:
-        ref = resolve_field_source_reference(selected_record, selected_asset, focused_field)
-        page = ref.get("page_number")
-        with st.container(border=True):
-            st.markdown(f"Highlighting **{_friendly_field_label(focused_field)}**")
-            if page is not None:
-                st.caption(f"Source page {page}")
-            if ref.get("source_snippet"):
-                st.info(ref["source_snippet"])
-    render_document_preview(selected_asset, selected_record)
-
-with right_col:
-    st.markdown("**Extracted fields**")
-    extracted_fields = selected_record.get("extracted_fields")
-    if not isinstance(extracted_fields, dict) or not extracted_fields:
-        st.info("No extracted fields are available for this evidence item.")
-    else:
-        for field_key, raw_value in extracted_fields.items():
-            bucket = field_confidence_bucket(selected_record, field_key)
-            status = get_field_review_status(reviewed_map, field_key)
-            entry = reviewed_map.get(field_key) if isinstance(reviewed_map.get(field_key), dict) else {}
-            current_value = entry.get("edited_value") if entry.get("edited_value") is not None else raw_value
-
-            with st.container(border=True):
-                header_cols = st.columns([3, 2])
-                header_cols[0].markdown(f"**{_friendly_field_label(field_key)}**")
-                header_cols[1].markdown(_confidence_badge(bucket))
-                st.write(f"Value: {current_value}")
-                if status == UNCONFIRMED_STATUS:
-                    st.caption("Review status: Unconfirmed")
-                else:
-                    st.caption(f"Review status: {status}")
-
-                edit_value = st.text_input(
-                    "Edit value",
-                    value=safe_text(current_value),
-                    key=f"edit_{selected_id}_{field_key}",
-                    label_visibility="collapsed",
-                )
-
-                action_cols = st.columns(5)
-                if action_cols[0].button("Accept", key=f"accept_{selected_id}_{field_key}", use_container_width=True):
-                    set_reviewed_extraction_field(selected_id, field_key, {"status": "Accepted"})
-                    st.rerun()
-                if action_cols[1].button("Edit", key=f"editsave_{selected_id}_{field_key}", use_container_width=True):
-                    set_reviewed_extraction_field(
-                        selected_id, field_key, {"status": "Edited", "edited_value": edit_value}
-                    )
-                    st.rerun()
-                if action_cols[2].button("Reject", key=f"reject_{selected_id}_{field_key}", use_container_width=True):
-                    set_reviewed_extraction_field(selected_id, field_key, {"status": "Rejected"})
-                    st.rerun()
-                if action_cols[3].button("Mark unclear", key=f"unclear_{selected_id}_{field_key}", use_container_width=True):
-                    set_reviewed_extraction_field(selected_id, field_key, {"status": "Needs clarification"})
-                    st.rerun()
-                if action_cols[4].button("View source", key=f"source_{selected_id}_{field_key}", use_container_width=True):
-                    set_focused_source_field(selected_id, field_key)
-                    st.rerun()
-
-    # Bulk confirmation of passing fields.
-    passing_keys = passing_field_keys(selected_record)
-    if passing_keys:
-        st.markdown("**Bulk confirmation**")
-        ack = st.checkbox(
-            f"I have reviewed the {len(passing_keys)} passing field(s) and confirm them.",
-            value=get_extraction_review_bulk_acknowledged(),
-            key=f"bulk_ack_{selected_id}",
-        )
-        set_extraction_review_bulk_acknowledged(ack)
-        if st.button("Confirm all passing fields", disabled=not ack, key=f"bulk_confirm_{selected_id}"):
-            for field_key in passing_keys:
-                set_reviewed_extraction_field(selected_id, field_key, {"status": "Accepted"})
-            set_extraction_review_bulk_acknowledged(False)
-            st.rerun()
-
-    # Auditor-added field (overlay only).
-    with st.expander("+ Add field", expanded=False):
-        new_key = st.text_input("Field name", key=f"addkey_{selected_id}")
-        new_value = st.text_input("Field value", key=f"addval_{selected_id}")
-        if st.button("Add field", key=f"addbtn_{selected_id}"):
-            clean_key = safe_text(new_key).strip().lower().replace(" ", "_")
-            if clean_key:
-                add_auditor_extraction_field(selected_id, clean_key, new_value)
-                st.rerun()
-            else:
-                st.warning("Enter a field name to add an auditor field.")
-
-# Neutral workbook link (no mismatch framing, no gap trigger here).
-linked_calc = _find_linked_calculation(analysis_response, selected_id)
-if linked_calc:
-    location = linked_calc.get("workbook_location") if isinstance(linked_calc.get("workbook_location"), dict) else {}
-    sheet = safe_text(location.get("sheet_name"))
-    cell = safe_text(location.get("cell_or_range"))
-    if sheet and cell:
-        st.caption(
-            f"Linked calculation {safe_text(linked_calc.get('calculation_id'))} → workbook {sheet}!{cell}"
-        )
-        if st.button("View linked workbook cell", key=f"wb_{selected_id}"):
-            open_workbook_location({"sheet_name": sheet, "cell_or_range": cell})
-
-with st.expander("Advanced extraction JSON", expanded=False):
-    st.json(selected_record.get("extracted_fields") or {})
-
-# --- Hard human-review gate (derived) -----------------------------------------
-st.divider()
-progress = get_extraction_review_progress(analysis_response, get_reviewed_extraction_fields())
-if progress["is_complete"]:
-    st.success("All reviewable fields have a decision. You can proceed to Calculation & Reconciliation.")
-else:
-    st.warning(
-        f"{progress['unconfirmed_fields']} field(s) still need a decision before you can proceed."
-    )
-
-if st.button(
-    "Proceed to Calculation & Reconciliation",
-    type="primary",
-    disabled=not progress["is_complete"],
-):
-    switch_page = getattr(st, "switch_page", None)
-    if callable(switch_page):
-        switch_page("pages/5_Calculation_and_Reconciliation.py")
-    else:
-        st.info("Open Calculation & Reconciliation from the sidebar to continue.")
+_fragment = getattr(st, "fragment", None)
+_workspace = _fragment(_render_workspace) if callable(_fragment) else _render_workspace
+_workspace()

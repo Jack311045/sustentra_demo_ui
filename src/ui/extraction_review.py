@@ -15,7 +15,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.ui.formatting import is_internal_routing_evidence, safe_text
+from src.ui.formatting import (
+    is_internal_routing_evidence,
+    safe_text,
+    sanitize_source_snippet,
+)
 
 
 # Reviewer decision vocabulary.
@@ -220,20 +224,27 @@ def get_extraction_review_progress(
     confirmed_fields = 0
     group_counts = {BUCKET_PASS: 0, BUCKET_NEEDS_REVIEW: 0, BUCKET_FAIL: 0}
     approved_records: list[str] = []
+    completed_records: list[str] = []
 
     for record in reviewable:
         evidence_id = safe_text(record.get("evidence_id"))
         reviewed_map = reviewed_all.get(evidence_id) if isinstance(reviewed_all.get(evidence_id), dict) else {}
         extracted = record.get("extracted_fields") or {}
 
+        record_field_count = 0
+        record_decided = 0
         for field_key in extracted:
             total_fields += 1
+            record_field_count += 1
             if get_field_review_status(reviewed_map, field_key) in FINAL_REVIEW_STATUSES:
                 confirmed_fields += 1
+                record_decided += 1
 
         bucket = record_confidence_bucket(record)
         group_counts[bucket] = group_counts.get(bucket, 0) + 1
 
+        if record_field_count > 0 and record_decided == record_field_count:
+            completed_records.append(evidence_id)
         if is_record_approved(record, reviewed_map):
             approved_records.append(evidence_id)
 
@@ -247,6 +258,8 @@ def get_extraction_review_progress(
         "group_counts": group_counts,
         "approved_record_ids": approved_records,
         "approved_record_count": len(approved_records),
+        "completed_record_ids": completed_records,
+        "completed_record_count": len(completed_records),
         "is_complete": is_complete,
     }
 
@@ -281,6 +294,69 @@ def resolve_field_source_reference(record: dict, asset: dict | None, field_key: 
     return {
         "field_key": field_key,
         "page_number": page_number,
-        "source_snippet": snippet,
-        "section_identifier": asset.get("section_identifier"),
+        "source_snippet": sanitize_source_snippet(snippet),
+        "section_identifier": asset.get("section_identifier") or safe_text(record.get("evidence_id")) or None,
     }
+
+
+def build_bulk_accept_update(
+    reviewed_all: dict | None,
+    records: list[dict],
+    *,
+    only_unconfirmed: bool = True,
+) -> dict:
+    """Return one updated copy of ``reviewed_extraction_fields`` for a bulk accept.
+
+    Marks applicable prepared extracted fields as ``Accepted`` across the given
+    records. By default only fields that are still ``Unconfirmed`` are changed;
+    existing ``Edited``/``Rejected``/``Needs clarification`` decisions and
+    auditor-added overlay fields are preserved. The mapping is rebuilt once so
+    the caller can write it back to session state in a single update.
+    """
+    updated: dict = {}
+    source = reviewed_all if isinstance(reviewed_all, dict) else {}
+    for evidence_id, field_map in source.items():
+        updated[evidence_id] = dict(field_map) if isinstance(field_map, dict) else {}
+
+    for record in records or []:
+        if not isinstance(record, dict):
+            continue
+        evidence_id = safe_text(record.get("evidence_id"))
+        extracted = record.get("extracted_fields")
+        if not evidence_id or not isinstance(extracted, dict):
+            continue
+        field_map = dict(updated.get(evidence_id) or {})
+        for field_key in extracted:
+            current = get_field_review_status(field_map, field_key)
+            if only_unconfirmed and current in FINAL_REVIEW_STATUSES:
+                continue
+            field_map[field_key] = {"status": ACCEPTED_STATUS}
+        updated[evidence_id] = field_map
+
+    return updated
+
+
+def record_period_label(record: dict) -> str:
+    """Short human period/month label for a record's left-rail row."""
+    record = record if isinstance(record, dict) else {}
+    extracted = record.get("extracted_fields") if isinstance(record.get("extracted_fields"), dict) else {}
+    month = extracted.get("billing_month_label")
+    if month:
+        return safe_text(month)
+    start = safe_text(record.get("period_start"))
+    end = safe_text(record.get("period_end"))
+    if start and end:
+        return f"{start} \u2192 {end}"
+    return start or end or ""
+
+
+def record_display_name(record: dict, asset: dict | None = None) -> str:
+    """Human-readable document name for a record."""
+    asset = asset if isinstance(asset, dict) else {}
+    record = record if isinstance(record, dict) else {}
+    return (
+        safe_text(asset.get("display_name"))
+        or safe_text(record.get("document_type"))
+        or safe_text(record.get("evidence_id"))
+        or "Document"
+    )

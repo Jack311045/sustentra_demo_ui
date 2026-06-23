@@ -1,0 +1,284 @@
+"""Tests for the Extraction Review v2.1 redesign (Page 3).
+
+Covers the new pure helpers (friendly value formatting, source-snippet
+sanitization, one-shot bulk acceptance, completed-record progress), the DOCX
+section preview extraction, manifest section identifiers, and the static
+contract of the redesigned page (no ``st.rerun``, no wrap-style injection, no
+five-column action row, callbacks instead of inline mutation).
+
+These tests deliberately avoid importing the Streamlit page or ``src.ui.state``
+(which require a Streamlit runtime). They exercise the pure helpers and validate
+the page source statically.
+"""
+
+from __future__ import annotations
+
+import ast
+import json
+import py_compile
+from pathlib import Path
+
+from src.ui.extraction_review import (
+    UNCONFIRMED_STATUS,
+    build_bulk_accept_update,
+    get_extraction_review_progress,
+    record_display_name,
+    record_period_label,
+    resolve_field_source_reference,
+)
+from src.ui.formatting import format_display_value, sanitize_source_snippet
+
+PAGE_3 = Path("pages/3_Extraction_Review.py")
+MANIFEST_PATH = Path("data/demo/mock_outputs/evidence_assets_manifest.json")
+GAP_PATH = Path("data/demo/mock_outputs/mock_analysis_response_gap_path.json")
+DOCX_PATH = Path("data/demo/inputs/evidence/Evidence_Pack_Generated_Review_Pack_Nora.docx")
+
+
+def _read_json(path: Path):
+    return json.loads(path.read_text(encoding="utf-8-sig"))
+
+
+def _record(ui_status: str = "pass") -> dict:
+    return {
+        "evidence_id": "EV-TEST-001",
+        "ui_status": ui_status,
+        "extracted_fields": {"usage_value": 100, "period": "October"},
+    }
+
+
+# --- format_display_value -----------------------------------------------------
+
+
+def test_format_display_value_lists_have_no_brackets_or_quotes() -> None:
+    out = format_display_value(["BLR-001", "BLR-002", "GEN-001"])
+    assert out == "BLR-001, BLR-002, GEN-001"
+    assert "[" not in out and "'" not in out and '"' not in out
+
+
+def test_format_display_value_bool_and_none() -> None:
+    assert format_display_value(True) == "Yes"
+    assert format_display_value(False) == "No"
+    assert format_display_value(None) == ""
+
+
+def test_format_display_value_numbers_are_readable() -> None:
+    assert format_display_value(28100) == "28,100"
+    assert format_display_value(1492.5) == "1,492.5"
+    assert format_display_value(100.0) == "100"
+
+
+def test_format_display_value_dict_is_label_value() -> None:
+    out = format_display_value({"sheet_name": "Natural Gas", "cell_or_range": "D12"})
+    assert out == "Sheet name: Natural Gas; Cell or range: D12"
+
+
+def test_format_display_value_str_unchanged() -> None:
+    assert format_display_value("Natural Gas") == "Natural Gas"
+
+
+# --- sanitize_source_snippet --------------------------------------------------
+
+
+def test_sanitize_strips_leading_evidence_token_and_normalizes() -> None:
+    raw = "EV-AGG-2023-001 groups BLR-001, BLR-002, GEN-001 for 2023 annual roll-up."
+    assert (
+        sanitize_source_snippet(raw)
+        == "This worksheet groups BLR-001, BLR-002, and GEN-001 for the 2023 annual roll-up."
+    )
+
+
+def test_sanitize_preserves_unit_identifiers() -> None:
+    out = sanitize_source_snippet("EV-AGG-2023-001 groups BLR-001, BLR-002, GEN-001 for 2023 annual roll-up.")
+    for unit in ("BLR-001", "BLR-002", "GEN-001"):
+        assert unit in out
+
+
+def test_sanitize_leaves_normal_text_untouched() -> None:
+    text = "January natural gas statement; usage 32,400 MMBtu."
+    assert sanitize_source_snippet(text) == text
+
+
+def test_sanitize_handles_empty() -> None:
+    assert sanitize_source_snippet(None) == ""
+    assert sanitize_source_snippet("") == ""
+
+
+# --- build_bulk_accept_update -------------------------------------------------
+
+
+def test_bulk_accept_only_unconfirmed_by_default() -> None:
+    records = [_record("pass")]
+    updated = build_bulk_accept_update({}, records)
+    assert updated["EV-TEST-001"]["usage_value"]["status"] == "Accepted"
+    assert updated["EV-TEST-001"]["period"]["status"] == "Accepted"
+
+
+def test_bulk_accept_preserves_existing_decisions() -> None:
+    records = [_record("pass")]
+    existing = {
+        "EV-TEST-001": {
+            "usage_value": {"status": "Rejected"},
+            "period": {"status": "Edited", "edited_value": "Oct 2023"},
+        }
+    }
+    updated = build_bulk_accept_update(existing, records)
+    assert updated["EV-TEST-001"]["usage_value"]["status"] == "Rejected"
+    assert updated["EV-TEST-001"]["period"]["status"] == "Edited"
+    assert updated["EV-TEST-001"]["period"]["edited_value"] == "Oct 2023"
+
+
+def test_bulk_accept_preserves_auditor_added_fields() -> None:
+    records = [_record("pass")]
+    existing = {
+        "EV-TEST-001": {
+            "extra_note": {"status": "Edited", "edited_value": "x", "auditor_added": True},
+        }
+    }
+    updated = build_bulk_accept_update(existing, records)
+    assert updated["EV-TEST-001"]["extra_note"]["auditor_added"] is True
+    assert updated["EV-TEST-001"]["usage_value"]["status"] == "Accepted"
+
+
+def test_progress_complete_after_bulk_accept() -> None:
+    response = {"evidence_results": [_record("pass")]}
+    updated = build_bulk_accept_update({}, response["evidence_results"])
+    progress = get_extraction_review_progress(response, updated)
+    assert progress["is_complete"] is True
+    assert progress["completed_record_count"] == 1
+    assert "EV-TEST-001" in progress["completed_record_ids"]
+
+
+def test_progress_completed_record_count_partial() -> None:
+    response = {"evidence_results": [_record("pass")]}
+    reviewed = {"EV-TEST-001": {"usage_value": {"status": "Accepted"}}}
+    progress = get_extraction_review_progress(response, reviewed)
+    assert progress["completed_record_count"] == 0
+
+
+# --- record labels ------------------------------------------------------------
+
+
+def test_record_display_name_prefers_asset_display_name() -> None:
+    record = {"evidence_id": "EV-X", "document_type": "Utility Bill"}
+    assert record_display_name(record, {"display_name": "Natural Gas Bill"}) == "Natural Gas Bill"
+    assert record_display_name(record, {}) == "Utility Bill"
+
+
+def test_record_period_label_from_period_bounds() -> None:
+    record = {"period_start": "2023-10-01", "period_end": "2023-10-31"}
+    assert "2023-10-01" in record_period_label(record)
+    assert "2023-10-31" in record_period_label(record)
+
+
+# --- source reference sanitization --------------------------------------------
+
+
+def test_resolve_field_source_reference_sanitizes_snippet() -> None:
+    record = {
+        "evidence_id": "EV-AGG-2023-001",
+        "source_references": [
+            {
+                "page_number": 12,
+                "source_snippet": "EV-AGG-2023-001 groups BLR-001, BLR-002, GEN-001 for 2023 annual roll-up.",
+            }
+        ],
+    }
+    ref = resolve_field_source_reference(record, {}, "aggregated_total")
+    assert not ref["source_snippet"].startswith("EV-AGG")
+    assert "and GEN-001" in ref["source_snippet"]
+    assert ref["section_identifier"] == "EV-AGG-2023-001"
+
+
+# --- DOCX section preview extraction ------------------------------------------
+
+
+def test_docx_section_extraction_returns_blocks() -> None:
+    from src.ui.document_preview import _DOCX_AVAILABLE, _extract_docx_section
+
+    if not _DOCX_AVAILABLE or not DOCX_PATH.exists():
+        return  # environment without python-docx or sample doc; preview falls back gracefully
+    blocks = _extract_docx_section(DOCX_PATH, "EV-NG-2023-010")
+    assert blocks, "October natural gas section should resolve to document blocks"
+    kinds = {kind for kind, _ in blocks}
+    assert "para" in kinds
+
+
+def test_docx_section_extraction_missing_returns_none() -> None:
+    from src.ui.document_preview import _DOCX_AVAILABLE, _extract_docx_section
+
+    if not _DOCX_AVAILABLE or not DOCX_PATH.exists():
+        return
+    assert _extract_docx_section(DOCX_PATH, "EV-DOES-NOT-EXIST-999") is None
+
+
+# --- manifest -----------------------------------------------------------------
+
+
+def test_manifest_section_identifiers_match_evidence_ids() -> None:
+    payload = _read_json(MANIFEST_PATH)
+    for asset in payload["assets"]:
+        assert asset["section_identifier"] == asset["evidence_id"]
+
+
+def test_manifest_snippets_have_no_leading_evidence_token() -> None:
+    payload = _read_json(MANIFEST_PATH)
+    for asset in payload["assets"]:
+        snippet = asset.get("source_snippet") or ""
+        assert not snippet.strip().upper().startswith("EV-"), asset["evidence_id"]
+
+
+def test_gap_path_agg_snippet_is_sanitized() -> None:
+    raw = GAP_PATH.read_text(encoding="utf-8-sig")
+    assert "EV-AGG-2023-001 groups" not in raw
+    assert "This worksheet groups BLR-001, BLR-002, and GEN-001 for the 2023 annual roll-up." in raw
+
+
+# --- Page 3 static contract ---------------------------------------------------
+
+
+def _page_source() -> str:
+    return PAGE_3.read_text(encoding="utf-8-sig")
+
+
+def _page_identifiers() -> set[str]:
+    tree = ast.parse(_page_source())
+    identifiers: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            identifiers.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            identifiers.add(node.attr)
+        elif isinstance(node, ast.alias):
+            identifiers.add((node.asname or node.name).split(".")[0])
+    return identifiers
+
+
+def test_page_compiles() -> None:
+    py_compile.compile(str(PAGE_3), doraise=True)
+
+
+def test_page_has_no_rerun_or_wrap_style() -> None:
+    identifiers = _page_identifiers()
+    assert "rerun" not in identifiers, "Page 3 must not call st.rerun()"
+    assert "_inject_button_style" not in identifiers
+    assert "white-space: nowrap" not in _page_source()
+
+
+def test_page_uses_three_pane_layout_and_no_five_column_action_row() -> None:
+    source = _page_source()
+    assert "st.columns([2, 4, 4]" in source
+    assert "st.columns(5)" not in source
+
+
+def test_page_uses_callbacks_for_field_actions() -> None:
+    source = _page_source()
+    assert "on_click=_cb_set_status" in source
+    assert "on_click=_cb_select_record" in source
+    assert "on_click=_cb_bulk_accept" in source
+
+
+def test_page_does_not_mutate_analysis_response() -> None:
+    identifiers = _page_identifiers()
+    for token in ("set_analysis_response", "MockApiClient", "adapt_analysis_response"):
+        assert token not in identifiers
+    assert "review_complete" not in identifiers

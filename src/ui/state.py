@@ -230,6 +230,27 @@ def get_reviewed_extraction_fields(evidence_id: str | None = None) -> dict:
     return evidence_map if isinstance(evidence_map, dict) else {}
 
 
+def set_reviewed_extraction_fields(mapping: dict) -> None:
+    """Replace the whole review overlay in a single write (bulk operations).
+
+    Only well-formed ``{evidence_id: {field_key: payload}}`` shapes are stored;
+    malformed entries are dropped defensively so a bulk update can never corrupt
+    the overlay.
+    """
+    if not isinstance(mapping, dict):
+        return
+    cleaned: dict = {}
+    for evidence_id, field_map in mapping.items():
+        if not isinstance(field_map, dict):
+            continue
+        cleaned[str(evidence_id)] = {
+            str(field_key): (payload if isinstance(payload, dict) else {"value": payload})
+            for field_key, payload in field_map.items()
+        }
+    st.session_state["reviewed_extraction_fields"] = cleaned
+
+
+
 def add_auditor_extraction_field(evidence_id: str, field_key: str, value: Any) -> None:
     """Record an auditor-supplied extraction field in the review overlay only.
 
