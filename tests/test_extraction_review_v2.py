@@ -18,6 +18,8 @@ import json
 import py_compile
 from pathlib import Path
 
+from streamlit.testing.v1 import AppTest
+
 from src.ui.extraction_review import (
     UNCONFIRMED_STATUS,
     build_bulk_accept_update,
@@ -266,8 +268,16 @@ def test_page_has_no_rerun_or_wrap_style() -> None:
 
 def test_page_uses_three_pane_layout_and_no_five_column_action_row() -> None:
     source = _page_source()
-    assert "st.columns([2, 4, 4]" in source
+    assert "st.columns([2.5, 5.5, 5.5]" in source
+    assert "st.columns([2, 4, 4]" not in source
     assert "st.columns(5)" not in source
+
+
+def test_page_has_scoped_width_treatment() -> None:
+    source = _page_source()
+    assert "MAX_WORKSPACE_WIDTH_PX" in source
+    assert "max-width" in source
+    assert "_inject_page3_layout_style" in source
 
 
 def test_page_uses_callbacks_for_field_actions() -> None:
@@ -275,6 +285,69 @@ def test_page_uses_callbacks_for_field_actions() -> None:
     assert "on_click=_cb_set_status" in source
     assert "on_click=_cb_select_record" in source
     assert "on_click=_cb_bulk_accept" in source
+    assert "st.popover" in source or "popover(" in source
+
+
+def test_page_has_toolbar_bulk_actions_and_risky_acks() -> None:
+    source = _page_source()
+    assert "Category bulk actions" in source
+    assert "Confirm all Pass fields" in source
+    assert "Accept all Needs-review fields" in source
+    assert "Accept all Fail fields" in source
+    assert "toolbar_ack_needs" in source
+    assert "toolbar_ack_fail" in source
+    assert "toolbar_ack_pass" not in source
+
+
+def test_left_rail_is_selector_only_no_bulk_copy() -> None:
+    source = _page_source()
+    assert "_render_left_group" in source
+    assert "I have reviewed these {label.lower()} fields" not in source
+
+
+def _run_page3_apptest() -> AppTest:
+    response = _read_json(GAP_PATH)
+    at = AppTest.from_file(str(PAGE_3), default_timeout=30)
+    at.session_state["analysis_response"] = response
+    at.run()
+    return at
+
+
+def test_page3_apptest_initial_render_no_exception() -> None:
+    at = _run_page3_apptest()
+    assert len(at.exception) == 0
+    assert len(at.metric) >= 4
+    labels = {metric.label for metric in at.metric}
+    assert {"Fields", "Decided", "Remaining", "Evidence items"}.issubset(labels)
+
+
+def test_page3_apptest_individual_accept_callback() -> None:
+    at = _run_page3_apptest()
+    accept_buttons = [button for button in at.button if button.label == "Accept"]
+    assert accept_buttons, "Expected at least one field-level Accept button"
+    accept_buttons[0].click().run()
+    assert len(at.exception) == 0
+    reviewed = at.session_state["reviewed_extraction_fields"] if "reviewed_extraction_fields" in at.session_state else None
+    assert isinstance(reviewed, dict) and reviewed
+
+
+def test_page3_apptest_bulk_and_record_selection_callbacks() -> None:
+    at = _run_page3_apptest()
+
+    pass_bulk = next((button for button in at.button if button.key == "toolbar_bulk_pass"), None)
+    assert pass_bulk is not None
+    if not pass_bulk.disabled:
+        pass_bulk.click().run()
+        assert len(at.exception) == 0
+
+    selected_before = at.session_state["selected_evidence_id"] if "selected_evidence_id" in at.session_state else None
+    selectable = [button for button in at.button if str(button.key).startswith("select_") and not button.disabled]
+    assert selectable, "Expected selectable evidence rows"
+    target = next((button for button in selectable if button.key and selected_before not in str(button.key)), selectable[0])
+    target.click().run()
+    assert len(at.exception) == 0
+    selected_after = at.session_state["selected_evidence_id"] if "selected_evidence_id" in at.session_state else None
+    assert selected_after != selected_before or len(selectable) == 1
 
 
 def test_page_does_not_mutate_analysis_response() -> None:

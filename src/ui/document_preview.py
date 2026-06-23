@@ -27,8 +27,9 @@ _CARD_STYLE = (
     "max-height:430px;overflow:auto;box-shadow:0 1px 2px rgba(16,24,40,0.06);"
 )
 _TABLE_STYLE = (
-    "border-collapse:collapse;width:100%;margin:8px 0;font-size:0.85rem;color:#1f2328;"
+    "border-collapse:collapse;min-width:760px;margin:8px 0;font-size:0.85rem;color:#1f2328;"
 )
+_TABLE_WRAP_STYLE = "overflow-x:auto;max-width:100%;margin:6px 0;"
 _TD_STYLE = "border:1px solid #d7dbe0;padding:5px 8px;text-align:left;vertical-align:top;"
 _META_STYLE = "color:#57606a;font-size:0.8rem;margin-bottom:10px;"
 
@@ -131,7 +132,8 @@ def _render_blocks_card(meta: dict, blocks: list[tuple[str, Any]]) -> None:
                     f"<{tag} style='{style}'>{html.escape(str(cell))}</{tag}>" for cell in row
                 )
                 cells_html.append(f"<tr>{cols}</tr>")
-            body_parts.append(f"<table style='{_TABLE_STYLE}'>{''.join(cells_html)}</table>")
+            table_html = f"<table style='{_TABLE_STYLE}'>{''.join(cells_html)}</table>"
+            body_parts.append(f"<div style='{_TABLE_WRAP_STYLE}'>{table_html}</div>")
     st.markdown(f"<div style='{_CARD_STYLE}'>{''.join(body_parts)}</div>", unsafe_allow_html=True)
 
 

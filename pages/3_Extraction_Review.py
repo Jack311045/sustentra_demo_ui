@@ -54,7 +54,8 @@ from src.ui.workflow import render_prepared_demo_disclosure
 
 
 ASSET_MANIFEST_PATH = Path("data/demo/mock_outputs/evidence_assets_manifest.json")
-PANE_HEIGHT = 560
+PANE_HEIGHT = 620
+MAX_WORKSPACE_WIDTH_PX = 1800
 
 _BUCKET_EMOJI = {BUCKET_PASS: "\U0001f7e2", BUCKET_NEEDS_REVIEW: "\U0001f7e0", BUCKET_FAIL: "\U0001f534"}
 _STATUS_COLOR = {
@@ -64,6 +65,31 @@ _STATUS_COLOR = {
     "Needs clarification": "orange",
     UNCONFIRMED_STATUS: "gray",
 }
+
+
+def _inject_page3_layout_style() -> None:
+    """Scope layout tweaks to Page 3 to maximize desktop usability."""
+    st.markdown(
+        f"""
+        <style>
+        [data-testid="stAppViewContainer"] .main .block-container {{
+            max-width: {MAX_WORKSPACE_WIDTH_PX}px;
+            padding-left: 1.1rem;
+            padding-right: 1.1rem;
+            padding-top: 1rem;
+        }}
+
+        [data-testid="stAppViewContainer"] div[data-testid="stButton"] > button,
+        [data-testid="stAppViewContainer"] div[data-testid="stButton"] > button p {{
+            white-space: normal;
+            word-break: normal;
+            overflow-wrap: normal;
+            line-height: 1.25;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def _load_asset_manifest() -> dict[str, dict]:
@@ -260,7 +286,6 @@ def _render_left_group(
     records: list[dict],
     selected_id: str,
     asset_manifest: dict,
-    reviewed_all: dict,
 ) -> None:
     label = BUCKET_LABELS[bucket]
     emoji = _BUCKET_EMOJI[bucket]
@@ -270,37 +295,11 @@ def _render_left_group(
             st.caption("No evidence in this group.")
             return
 
-        unconfirmed = _unconfirmed_field_count(records, reviewed_all)
-        if bucket == BUCKET_PASS:
-            st.button(
-                f"Confirm all Pass fields ({unconfirmed})",
-                key="bulk_pass",
-                disabled=unconfirmed == 0,
-                use_container_width=True,
-                on_click=_cb_bulk_accept,
-                args=(records,),
-            )
-        else:
-            ack = st.checkbox(
-                f"I have reviewed these {label.lower()} fields and accept them.",
-                key=f"bulk_ack_{bucket}",
-            )
-            st.button(
-                f"Accept all {unconfirmed} field(s) anyway",
-                key=f"bulk_{bucket}",
-                disabled=not ack or unconfirmed == 0,
-                use_container_width=True,
-                on_click=_cb_bulk_accept,
-                args=(records,),
-            )
-
         for record in records:
             evidence_id = safe_text(record.get("evidence_id"))
             period = record_period_label(record)
             name = record_display_name(record, asset_manifest.get(evidence_id, {}))
-            row_label = f"{_BUCKET_EMOJI[bucket]} {name}"
-            if period:
-                row_label += f" \u00b7 {period}"
+            row_label = name
             st.button(
                 row_label,
                 key=f"select_{bucket}_{evidence_id}",
@@ -309,6 +308,79 @@ def _render_left_group(
                 on_click=_cb_select_record,
                 args=(evidence_id,),
             )
+            meta_bits = [evidence_id]
+            if period:
+                meta_bits.append(period)
+            st.caption(" | ".join(meta_bits))
+
+
+def _render_bulk_toolbar(grouped: dict[str, list[dict]], reviewed_all: dict) -> None:
+    st.markdown("**Category bulk actions**")
+    pass_count = _unconfirmed_field_count(grouped.get(BUCKET_PASS, []), reviewed_all)
+    needs_count = _unconfirmed_field_count(grouped.get(BUCKET_NEEDS_REVIEW, []), reviewed_all)
+    fail_count = _unconfirmed_field_count(grouped.get(BUCKET_FAIL, []), reviewed_all)
+
+    col_pass, col_needs, col_fail = st.columns(3, gap="small")
+
+    col_pass.button(
+        f"Confirm all Pass fields ({pass_count})",
+        key="toolbar_bulk_pass",
+        disabled=pass_count == 0,
+        use_container_width=True,
+        on_click=_cb_bulk_accept,
+        args=(grouped.get(BUCKET_PASS, []),),
+    )
+
+    popover = getattr(st, "popover", None)
+    with col_needs:
+        if callable(popover):
+            with st.popover(f"Accept all Needs-review fields ({needs_count})", use_container_width=True):
+                st.caption("Requires explicit reviewer acknowledgement.")
+                needs_ack = st.checkbox("I have reviewed these needs-review fields.", key="toolbar_ack_needs")
+                st.button(
+                    "Apply to Needs-review",
+                    key="toolbar_apply_needs",
+                    disabled=needs_count == 0 or not needs_ack,
+                    use_container_width=True,
+                    on_click=_cb_bulk_accept,
+                    args=(grouped.get(BUCKET_NEEDS_REVIEW, []),),
+                )
+        else:
+            with st.expander(f"Accept all Needs-review fields ({needs_count})", expanded=False):
+                needs_ack = st.checkbox("I have reviewed these needs-review fields.", key="toolbar_ack_needs_fallback")
+                st.button(
+                    "Apply to Needs-review",
+                    key="toolbar_apply_needs_fallback",
+                    disabled=needs_count == 0 or not needs_ack,
+                    use_container_width=True,
+                    on_click=_cb_bulk_accept,
+                    args=(grouped.get(BUCKET_NEEDS_REVIEW, []),),
+                )
+
+    with col_fail:
+        if callable(popover):
+            with st.popover(f"Accept all Fail fields ({fail_count})", use_container_width=True):
+                st.caption("Requires explicit reviewer acknowledgement.")
+                fail_ack = st.checkbox("I have reviewed these fail fields.", key="toolbar_ack_fail")
+                st.button(
+                    "Apply to Fail",
+                    key="toolbar_apply_fail",
+                    disabled=fail_count == 0 or not fail_ack,
+                    use_container_width=True,
+                    on_click=_cb_bulk_accept,
+                    args=(grouped.get(BUCKET_FAIL, []),),
+                )
+        else:
+            with st.expander(f"Accept all Fail fields ({fail_count})", expanded=False):
+                fail_ack = st.checkbox("I have reviewed these fail fields.", key="toolbar_ack_fail_fallback")
+                st.button(
+                    "Apply to Fail",
+                    key="toolbar_apply_fail_fallback",
+                    disabled=fail_count == 0 or not fail_ack,
+                    use_container_width=True,
+                    on_click=_cb_bulk_accept,
+                    args=(grouped.get(BUCKET_FAIL, []),),
+                )
 
 
 def _render_workspace() -> None:
@@ -358,14 +430,16 @@ def _render_workspace() -> None:
         grouped[record_confidence_bucket(record)].append(record)
     internal_records = get_internal_routing_records(analysis_response)
 
-    left_col, source_col, fields_col = st.columns([2, 4, 4], gap="medium")
+    _render_bulk_toolbar(grouped, reviewed_all)
+
+    left_col, source_col, fields_col = st.columns([2.5, 5.5, 5.5], gap="medium")
 
     # --- Left rail: confidence groups -----------------------------------------
     with left_col:
         with st.container(height=PANE_HEIGHT, border=True):
             st.markdown("**Evidence by confidence**")
             for bucket in (BUCKET_FAIL, BUCKET_NEEDS_REVIEW, BUCKET_PASS):
-                _render_left_group(bucket, grouped[bucket], selected_id, asset_manifest, reviewed_all)
+                _render_left_group(bucket, grouped[bucket], selected_id, asset_manifest)
             if internal_records:
                 with st.expander(f"Internal routing ({len(internal_records)})", expanded=False):
                     st.caption("Routing/index documents are read-only and excluded from the gate.")
@@ -475,6 +549,7 @@ def _render_workspace() -> None:
 
 
 init_session_state()
+_inject_page3_layout_style()
 st.title("Extraction Review")
 st.caption("Confirm prepared extracted fields against the source evidence before any calculation runs.")
 render_prepared_demo_disclosure()
