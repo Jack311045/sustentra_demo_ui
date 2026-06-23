@@ -22,6 +22,9 @@ _DEFAULTS: dict[str, Any] = {
     "selected_calculation_id": None,
     "selected_gap_ticket_id": None,
     "selected_workbook_location": None,
+    "focused_source_evidence_id": None,
+    "focused_source_field_key": None,
+    "extraction_review_bulk_acknowledged": False,
     "chat_history": [],
     "chat_context_gap_ticket_id": None,
     "prepared_demo_disclosure_acknowledged": False,
@@ -225,6 +228,39 @@ def get_reviewed_extraction_fields(evidence_id: str | None = None) -> dict:
         return reviewed
     evidence_map = reviewed.get(evidence_id)
     return evidence_map if isinstance(evidence_map, dict) else {}
+
+
+def add_auditor_extraction_field(evidence_id: str, field_key: str, value: Any) -> None:
+    """Record an auditor-supplied extraction field in the review overlay only.
+
+    This never mutates ``analysis_response``; the added field lives in the
+    reviewer overlay and is treated as an Edited (auditor-authored) value.
+    """
+    set_reviewed_extraction_field(
+        evidence_id,
+        field_key,
+        {"status": "Edited", "edited_value": value, "auditor_added": True},
+    )
+
+
+def set_focused_source_field(evidence_id: str | None, field_key: str | None) -> None:
+    st.session_state["focused_source_evidence_id"] = evidence_id
+    st.session_state["focused_source_field_key"] = field_key
+
+
+def get_focused_source_field() -> dict:
+    return {
+        "evidence_id": st.session_state.get("focused_source_evidence_id"),
+        "field_key": st.session_state.get("focused_source_field_key"),
+    }
+
+
+def set_extraction_review_bulk_acknowledged(acknowledged: bool) -> None:
+    st.session_state["extraction_review_bulk_acknowledged"] = bool(acknowledged)
+
+
+def get_extraction_review_bulk_acknowledged() -> bool:
+    return bool(st.session_state.get("extraction_review_bulk_acknowledged", False))
 
 
 def set_selected_evidence_id(evidence_id: str | None) -> None:
