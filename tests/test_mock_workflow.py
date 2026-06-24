@@ -73,10 +73,10 @@ def test_evidence_intake_hard_pins_gap_path_and_hides_debug_snapshot_ui() -> Non
 def test_sustentra_ai_assistant_disclaimer_and_live_fallback_strings() -> None:
     source = Path("pages/7_Sustentra_AI_Assistant.py").read_text(encoding="utf-8")
 
-    assert "does not provide legal advice" in source
+    assert "not legal advice" in source.lower()
     assert "answer_assistant_question" in source
     assert "build_assistant_context" in source
-    assert "Retry last question using live service" in source
+    assert "Retry on live service" in source
     assert "Assistant diagnostics" in source
 
 

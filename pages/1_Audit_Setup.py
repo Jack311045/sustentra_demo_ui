@@ -120,6 +120,8 @@ def _hydrate_widgets_from_setup(setup: dict, revision: int) -> None:
     st.session_state["audit_reporting_period"] = _text(company.get("reporting_period"))
     st.session_state["audit_company_facility_identifier"] = _text(company.get("company_facility_identifier"))
     st.session_state["audit_duns_number"] = _text(company.get("duns_number"), DEMO_OVERRIDES["duns_number"])
+    st.session_state["audit_client_contact_name"] = _text(company.get("client_contact_name"))
+    st.session_state["audit_client_contact_email"] = _text(company.get("client_contact_email"))
 
     st.session_state["audit_scope_1"] = bool(boundary.get("scope_1", True))
     st.session_state["audit_scope_2"] = bool(boundary.get("scope_2", False))
@@ -248,6 +250,20 @@ with id_col1:
     )
 with id_col2:
     duns_number = st.text_input("DUNS", key="audit_duns_number")
+
+contact_col1, contact_col2 = st.columns(2)
+
+with contact_col1:
+    client_contact_name = st.text_input(
+        "Client contact name",
+        key="audit_client_contact_name",
+    )
+
+with contact_col2:
+    client_contact_email = st.text_input(
+        "Client contact email",
+        key="audit_client_contact_email",
+    )
 
 st.subheader("Reporting boundary")
 boundary_col1, boundary_col2 = st.columns(2)
@@ -412,6 +428,8 @@ existing_company.update(
         "facility_address": facility_address,
         "company_facility_identifier": company_facility_identifier,
         "duns_number": duns_number,
+        "client_contact_name": client_contact_name,
+        "client_contact_email": client_contact_email,
         "industry": industry,
         "facility_type": facility_type,
         "reporting_period": reporting_period,

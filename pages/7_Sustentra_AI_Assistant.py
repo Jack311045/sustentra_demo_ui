@@ -332,41 +332,92 @@ def _render_assistant_message(metadata: dict, fallback_content: str, key_prefix:
     )
     st.markdown(conclusion)
 
-    evidence_context = sections.get("evidence_context") if isinstance(sections.get("evidence_context"), list) else []
-    st.markdown("**Evidence and audit context**")
-    if evidence_context:
-        for line in evidence_context:
-            st.markdown(f"- {_display_text(line)}")
-    else:
-        st.markdown(f"- {NOT_AVAILABLE_IN_CONTEXT}")
+    evidence_context = (
+        sections.get("evidence_context")
+        if isinstance(sections.get("evidence_context"), list)
+        else []
+    )
 
-    regulatory_basis = sections.get("regulatory_basis") if isinstance(sections.get("regulatory_basis"), list) else []
-    st.markdown("**Regulatory basis**")
-    if regulatory_basis:
-        for line in regulatory_basis:
-            st.markdown(f"- {_display_text(line)}")
-    else:
-        st.markdown(f"- {NOT_AVAILABLE_IN_CONTEXT}")
+    regulatory_basis = (
+        sections.get("regulatory_basis")
+        if isinstance(sections.get("regulatory_basis"), list)
+        else []
+    )
 
-    st.markdown("**Recommended next step**")
-    st.markdown(_display_text(sections.get("next_step")))
+    sources = (
+        sections.get("sources")
+        if isinstance(sections.get("sources"), list)
+        else []
+    )
 
-    sources = sections.get("sources") if isinstance(sections.get("sources"), list) else []
+    with st.expander(
+        "Evidence & context",
+        expanded=False,
+    ):
+        if evidence_context:
+            for line in evidence_context:
+                st.markdown(
+                    f"- {_display_text(line)}"
+                )
+        else:
+            st.markdown(
+                f"- {NOT_AVAILABLE_IN_CONTEXT}"
+            )
+
+    with st.expander(
+        "Regulatory basis",
+        expanded=False,
+    ):
+        if regulatory_basis:
+            for line in regulatory_basis:
+                st.markdown(
+                    f"- {_display_text(line)}"
+                )
+        else:
+            st.markdown(
+                f"- {NOT_AVAILABLE_IN_CONTEXT}"
+            )
+
     if sources:
-        st.markdown("**Sources**")
-        for index, source in enumerate(sources, start=1):
-            if not isinstance(source, dict):
-                continue
-            source_title = _display_text(source.get("title"))
-            with st.expander(f"Source {index}: {source_title}", expanded=False):
-                st.write(f"Authority: {_display_text(source.get('authority'))}")
-                st.write(f"Section/citation: {_display_text(source.get('citation'))}")
-                excerpt = _display_text(source.get("excerpt"))
+        with st.expander(
+            f"Sources ({len(sources)})",
+            expanded=False,
+        ):
+            for index, source in enumerate(
+                sources,
+                start=1,
+            ):
+                if not isinstance(source, dict):
+                    continue
+
+                st.write(
+                    f"{index}. "
+                    f"{_display_text(source.get('title'))} — "
+                    f"{_display_text(source.get('authority'))} "
+                    f"{_display_text(source.get('citation'))}"
+                )
+
+                excerpt = _display_text(
+                    source.get("excerpt")
+                )
+
                 if excerpt != NOT_AVAILABLE_IN_CONTEXT:
                     st.caption(excerpt)
-                url = safe_text(source.get("url")).strip()
+
+                url = safe_text(
+                    source.get("url")
+                ).strip()
+
                 if url:
-                    st.link_button("Open source link", url, use_container_width=False)
+                    st.link_button(
+                        "Open source link",
+                        url,
+                    )
+
+    st.markdown(
+        "**Next step:** "
+        f"{_display_text(sections.get('next_step'))}"
+    )
 
     error_code = safe_text(metadata.get("error_code")).strip()
     error_message = safe_text(metadata.get("error_message")).strip()
@@ -377,10 +428,7 @@ def _render_assistant_message(metadata: dict, fallback_content: str, key_prefix:
 init_session_state()
 
 st.title("Sustentra AI Assistant")
-st.caption(
-    "Ask source-backed questions about the current audit evidence, validation checks, calculations, findings, and NY Part 253 context."
-)
-st.info("This assistant supports audit research and does not provide legal advice.")
+st.caption("Source-backed audit research · not legal advice")
 
 analysis_response = get_analysis_response()
 if not analysis_response:
@@ -398,138 +446,240 @@ health_snapshot = {"ok": False, "category": "skipped", "message": "Health check 
 if current_mode != "prepared" and rag_configured:
     health_snapshot = _cached_health_snapshot(f"{current_mode}:configured")
 
-current_gap_id = get_chat_context_gap_ticket_id()
-current_ticket = _find_ticket(gap_tickets, current_gap_id)
-if current_gap_id and current_ticket is None:
-    set_chat_context_gap_ticket_id(None)
-    current_gap_id = None
+with st.sidebar:
+    st.markdown("### Context")
 
-if gap_tickets:
-    labels = ["(none)"]
-    label_to_id = {"(none)": None}
-    for ticket in gap_tickets:
-        gap_id = safe_text(ticket.get("gap_ticket_id")).strip()
-        if not gap_id:
-            continue
-        label = f"{_ticket_title(ticket)} ({gap_id})"
-        labels.append(label)
-        label_to_id[label] = gap_id
+    current_gap_id = get_chat_context_gap_ticket_id()
 
-    selected_label = "(none)"
-    if current_gap_id:
-        for label, gap_id in label_to_id.items():
-            if gap_id == current_gap_id:
-                selected_label = label
-                break
+    if (
+        current_gap_id
+        and _find_ticket(gap_tickets, current_gap_id) is None
+    ):
+        set_chat_context_gap_ticket_id(None)
+        current_gap_id = None
 
-    selected_label = st.selectbox("Selected finding context", options=labels, index=labels.index(selected_label))
-    selected_gap_id = label_to_id.get(selected_label)
-    if selected_gap_id != current_gap_id:
-        set_chat_context_gap_ticket_id(selected_gap_id)
-        current_gap_id = selected_gap_id
+    if gap_tickets:
+        labels = ["(none)"]
+        label_to_id = {"(none)": None}
 
-context_ticket = _find_ticket(gap_tickets, current_gap_id)
+        for ticket in gap_tickets:
+            gap_id = safe_text(
+                ticket.get("gap_ticket_id")
+            ).strip()
 
-chat_history = get_chat_history()
-latest_assistant_metadata: dict[str, Any] = {}
-for item in reversed(chat_history):
-    if not isinstance(item, dict):
-        continue
-    if safe_text(item.get("role")).strip() != "assistant":
-        continue
-    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
-    if metadata:
-        latest_assistant_metadata = metadata
-        break
+            if not gap_id:
+                continue
 
-latest_provider = safe_text(latest_assistant_metadata.get("provider")).strip()
-if latest_provider == "sustentra_rag" or (current_mode != "prepared" and rag_configured and health_snapshot.get("ok")):
-    assistant_status = "Live source-backed service"
-else:
-    assistant_status = "Prepared fallback"
+            label = f"{_ticket_title(ticket)} ({gap_id})"
+            labels.append(label)
+            label_to_id[label] = gap_id
 
-facility_name = _display_text(
-    (audit_setup.get("company_and_facility_profile") or {}).get("facility_name")
-    if isinstance(audit_setup.get("company_and_facility_profile"), dict)
-    else None
-)
-reporting_period = _display_text(
-    (audit_setup.get("company_and_facility_profile") or {}).get("reporting_period")
-    if isinstance(audit_setup.get("company_and_facility_profile"), dict)
-    else None
-)
+        selected_label = "(none)"
 
-selected_evidence_id = get_selected_evidence_id()
-selected_validation_id = get_selected_validation_id()
-selected_calculation_id = get_selected_calculation_id()
-selected_workbook_location = get_selected_workbook_location()
+        if current_gap_id:
+            for label, gap_id in label_to_id.items():
+                if gap_id == current_gap_id:
+                    selected_label = label
+                    break
 
-with st.container(border=True):
-    st.markdown("### Context summary")
-    st.markdown(f"- Facility: {facility_name}")
-    st.markdown(f"- Reporting period: {reporting_period}")
-    if isinstance(context_ticket, dict):
-        st.markdown(
-            f"- Selected finding: {_ticket_title(context_ticket)} ({_display_text(context_ticket.get('gap_ticket_id'))})"
+        selected_label = st.selectbox(
+            "Selected finding",
+            options=labels,
+            index=labels.index(selected_label),
         )
-    else:
-        st.markdown(f"- Selected finding: {NOT_AVAILABLE_IN_CONTEXT}")
-    st.markdown(f"- Selected evidence context: {_display_text(selected_evidence_id)}")
-    st.markdown(f"- Selected calculation context: {_display_text(selected_calculation_id)}")
-    if isinstance(selected_workbook_location, dict):
-        sheet = safe_text(selected_workbook_location.get("sheet_name")).strip()
-        cell = safe_text(selected_workbook_location.get("cell_or_range")).strip()
-        workbook_label = f"{sheet}!{cell}" if sheet and cell else NOT_AVAILABLE_IN_CONTEXT
-    else:
-        workbook_label = NOT_AVAILABLE_IN_CONTEXT
-    st.markdown(f"- Selected workbook context: {workbook_label}")
-    st.markdown(f"- Assistant status: {assistant_status}")
 
-control_col1, control_col2, control_col3 = st.columns(3)
-if control_col1.button("Clear conversation", use_container_width=True):
-    clear_chat_history()
-if control_col2.button("Retry last question using live service", use_container_width=True):
-    last_question = _last_user_question(chat_history)
-    if last_question:
-        _queue_question(last_question, force_real=True)
+        selected_gap_id = label_to_id.get(selected_label)
+
+        if selected_gap_id != current_gap_id:
+            set_chat_context_gap_ticket_id(selected_gap_id)
+            current_gap_id = selected_gap_id
+
+    context_ticket = _find_ticket(
+        gap_tickets,
+        current_gap_id,
+    )
+
+    latest_provider = ""
+
+    for item in reversed(get_chat_history()):
+        if not isinstance(item, dict):
+            continue
+
+        if safe_text(item.get("role")).strip() != "assistant":
+            continue
+
+        metadata = (
+            item.get("metadata")
+            if isinstance(item.get("metadata"), dict)
+            else {}
+        )
+
+        if metadata:
+            latest_provider = safe_text(
+                metadata.get("provider")
+            ).strip()
+            break
+
+    if (
+        latest_provider == "sustentra_rag"
+        or (
+            current_mode != "prepared"
+            and rag_configured
+            and health_snapshot.get("ok")
+        )
+    ):
+        status_md = ":green[Live source-backed]"
     else:
-        st.info("No previous user question is available to retry.")
-if control_col3.button("Remove current gap context", use_container_width=True):
-    set_chat_context_gap_ticket_id(None)
+        status_md = ":orange[Prepared fallback]"
+
+    profile = (
+        audit_setup.get("company_and_facility_profile")
+        if isinstance(
+            audit_setup.get("company_and_facility_profile"),
+            dict,
+        )
+        else {}
+    )
+
+    facility_label = _display_text(
+        profile.get("facility_name")
+    )
+    period_label = _display_text(
+        profile.get("reporting_period")
+    )
+
+    selected_evidence_id = get_selected_evidence_id()
+    selected_validation_id = get_selected_validation_id()
+    selected_calculation_id = get_selected_calculation_id()
+    selected_workbook_location = (
+        get_selected_workbook_location()
+    )
+
+    workbook_label = NOT_AVAILABLE_IN_CONTEXT
+
+    if isinstance(selected_workbook_location, dict):
+        sheet = safe_text(
+            selected_workbook_location.get("sheet_name")
+        ).strip()
+        cell = safe_text(
+            selected_workbook_location.get("cell_or_range")
+        ).strip()
+
+        if sheet and cell:
+            workbook_label = f"{sheet}!{cell}"
+
+    st.caption(f"Facility · {facility_label}")
+    st.caption(f"Period · {period_label}")
+
+    if _display_text(selected_evidence_id) != NOT_AVAILABLE_IN_CONTEXT:
+        st.caption(
+            "Evidence · "
+            f"{_display_text(selected_evidence_id)}"
+        )
+
+    if _display_text(selected_validation_id) != NOT_AVAILABLE_IN_CONTEXT:
+        st.caption(
+            "Validation · "
+            f"{_display_text(selected_validation_id)}"
+        )
+
+    if _display_text(selected_calculation_id) != NOT_AVAILABLE_IN_CONTEXT:
+        st.caption(
+            "Calculation · "
+            f"{_display_text(selected_calculation_id)}"
+        )
+
+    if workbook_label != NOT_AVAILABLE_IN_CONTEXT:
+        st.caption(f"Workbook · {workbook_label}")
+
+    if isinstance(context_ticket, dict):
+        st.caption(
+            "Finding · "
+            f"{_display_text(context_ticket.get('gap_ticket_id'))}"
+        )
+
+    st.markdown(f"Status · {status_md}")
+    st.divider()
+    st.markdown("##### Session")
+
+    if st.button(
+        "Retry on live service",
+        use_container_width=True,
+    ):
+        last_question = _last_user_question(
+            get_chat_history()
+        )
+
+        if last_question:
+            _queue_question(
+                last_question,
+                force_real=True,
+            )
+        else:
+            st.info("No previous question to retry.")
+
+    if st.button(
+        "Clear conversation",
+        use_container_width=True,
+    ):
+        clear_chat_history()
+
+    if st.button(
+        "Remove finding context",
+        use_container_width=True,
+    ):
+        set_chat_context_gap_ticket_id(None)
 
 if isinstance(context_ticket, dict):
     context_gap_id = _display_text(context_ticket.get("gap_ticket_id"))
     context_title = _ticket_title(context_ticket)
 
-    st.markdown("### Context actions")
-    primary_col1, primary_col2, primary_col3 = st.columns(3)
-    if primary_col1.button("Explain this finding", use_container_width=True):
+    qa_cols = st.columns(
+        [1, 1, 1, 0.6],
+        gap="small",
+    )
+
+    if qa_cols[0].button(
+        "Explain finding",
+        use_container_width=True,
+    ):
         _queue_question(f"Explain this finding in auditor terms: {context_gap_id} - {context_title}.")
-    if primary_col2.button("Show evidence and workbook trace", use_container_width=True):
+
+    if qa_cols[1].button(
+        "Evidence trace",
+        use_container_width=True,
+    ):
         _queue_question(f"Show the evidence and workbook trace for {context_gap_id}.")
-    if primary_col3.button("Explain the regulatory basis", use_container_width=True):
+
+    if qa_cols[2].button(
+        "Regulatory basis",
+        use_container_width=True,
+    ):
         _queue_question(f"Explain the regulatory basis for finding {context_gap_id}.")
 
-    with st.expander("Secondary actions", expanded=False):
-        if st.button("Draft client clarification request", use_container_width=True):
-            _queue_question(f"Draft a client clarification request for {context_gap_id}.")
+    popover = getattr(st, "popover", None)
+
+    with qa_cols[3]:
+        more_context = (
+            popover("More")
+            if callable(popover)
+            else st.expander("More")
+        )
+
+    with more_context:
         if st.button("Draft auditor note", use_container_width=True):
             _queue_question(f"Draft an auditor note for {context_gap_id}.")
 
 suggested_questions = _visible_suggestions(chat_suggestions)
-visible_questions = suggested_questions[:3]
-more_questions = suggested_questions[3:]
-
-if visible_questions:
-    st.markdown("### Suggested questions")
-    for idx, question in enumerate(visible_questions):
-        if st.button(question, key=f"suggested_question_{idx}", use_container_width=True):
-            _queue_question(question)
-
-if more_questions:
-    with st.expander("More suggested questions", expanded=False):
-        for idx, question in enumerate(more_questions):
-            if st.button(question, key=f"more_suggested_question_{idx}", use_container_width=True):
+if suggested_questions:
+    with st.expander(
+        "Suggested questions",
+        expanded=False,
+    ):
+        for idx, question in enumerate(
+            suggested_questions
+        ):
+            if st.button(question, key=f"suggested_question_{idx}", use_container_width=True):
                 _queue_question(question)
 
 history = get_chat_history()

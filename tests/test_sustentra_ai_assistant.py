@@ -102,9 +102,16 @@ def test_page7_source_contract_includes_live_orchestration() -> None:
     assert "answer_assistant_question" in identifiers
     assert "build_assistant_context" in identifiers
     assert "has_rag_configuration" in source
-    assert "Retry last question using live service" in source
+    assert "Retry on live service" in source
+    assert "Retry last question using live service" not in source
     assert "Assistant diagnostics" in source
-    assert "does not provide legal advice" in source.lower()
+    assert "with st.sidebar" in source
+    assert "not legal advice" in source.lower()
+    assert "Draft client clarification request" not in source
+    assert "Context summary" not in source
+    assert "More suggested questions" not in source
+    assert "Evidence & context" in source
+    assert '"**Next step:** "' in source
     assert "_LEADING_ANSWER_HEADING_RE" in source
     assert "_strip_redundant_leading_heading" in source
     assert 'st.markdown("**Conclusion**")' not in source
@@ -121,17 +128,28 @@ def test_navigation_and_labels_use_sustentra_ai_assistant_name() -> None:
     assert "Sustentra AI Assistant" in app_source
 
 
-def test_page7_renders_context_summary_actions_and_diagnostics() -> None:
+def test_page7_renders_sidebar_context_actions_and_diagnostics() -> None:
     response = _read_json(FIXTURE_PATH)
     at = _run_page7(response, context_gap_ticket_id="GT-DEMO-GAP-003")
 
     assert len(at.exception) == 0
     rendered = _collect_text(at)
 
-    assert "Context summary" in rendered
-    assert "Selected finding" in rendered
+    assert "Context summary" not in rendered
+    assert "Facility ·" in rendered
     assert "Clear conversation" in rendered
-    assert "Retry last question using live service" in rendered
+    assert "Retry on live service" in rendered
+    assert "Remove finding context" in rendered
+    assert "Explain finding" in rendered
+    assert "Draft auditor note" in rendered
+    assert "Draft client clarification request" not in rendered
+
+
+def test_page7_suggested_questions_use_single_collapsed_group() -> None:
+    source = PAGE_7.read_text(encoding="utf-8")
+
+    assert "Suggested questions" in source
+    assert "More suggested questions" not in source
 
 
 def test_selected_chat_question_from_gap_action_is_processed_once_with_structured_metadata() -> None:
@@ -257,6 +275,7 @@ def test_page7_includes_selected_navigation_context_identifiers() -> None:
     assert len(at.exception) == 0
     rendered = _collect_text(at)
     assert evidence_id in rendered
+    assert validation_id in rendered
     assert calculation_id in rendered
     assert "Summary!D12" in rendered
 

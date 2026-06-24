@@ -38,6 +38,14 @@ def test_unknown_values_not_invented() -> None:
     assert engagement.get("auditor_reviewer") == "Sustentra prepared-demo reviewer"
 
 
+def test_audit_setup_fixture_includes_client_contact_fields() -> None:
+    payload = _read_json("data/demo/mock_outputs/mock_audit_setup.json")
+    profile = payload["company_and_facility_profile"]
+
+    assert profile.get("client_contact_name") == "Dana Whitfield"
+    assert profile.get("client_contact_email") == "dana.whitfield@ab-baldwinsville.example.com"
+
+
 def test_analysis_response_includes_audit_setup() -> None:
     payload = _read_json("data/demo/mock_outputs/mock_analysis_response.json")
 

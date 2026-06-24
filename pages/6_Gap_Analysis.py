@@ -58,6 +58,337 @@ def _note_widget_key(ticket_id: str) -> str:
     return f"gap_note_widget::{ticket_id}"
 
 
+def _clarify_message_key(ticket_id: str) -> str:
+    return f"gap_clarify_message::{ticket_id}"
+
+
+def _clarify_to_key(ticket_id: str) -> str:
+    return f"gap_clarify_to::{ticket_id}"
+
+
+def _clarify_subject_key(ticket_id: str) -> str:
+    return f"gap_clarify_subject::{ticket_id}"
+
+
+def _inject_page6_layout_style() -> None:
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stAppViewContainer"]
+        div[data-testid="stMainBlockContainer"] {
+            width: 100% !important;
+            max-width: none !important;
+            box-sizing: border-box !important;
+            padding-left: clamp(0.8rem, 1.3vw, 1.6rem) !important;
+            padding-right: clamp(0.8rem, 1.3vw, 1.6rem) !important;
+            padding-top: 1rem !important;
+        }
+
+        section.main .block-container {
+            width: 100% !important;
+            max-width: none !important;
+            box-sizing: border-box !important;
+            padding-left: clamp(0.8rem, 1.3vw, 1.6rem) !important;
+            padding-right: clamp(0.8rem, 1.3vw, 1.6rem) !important;
+        }
+
+        div[data-testid="column"] {
+            min-width: 0 !important;
+        }
+
+        div[data-testid="stButton"] > button {
+            white-space: normal !important;
+            word-break: normal !important;
+            overflow-wrap: break-word !important;
+            line-height: 1.25 !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+CLARIFICATION_DRAFTS = {
+    "GT-DEMO-GAP-002": (
+        "What we observed: the equipment inventory and workbook exclude pilot "
+        "light sources, citing 40 CFR 98.30(d).\n"
+        "What NY Part 253 requires: pilot light emissions must be included in "
+        "the emissions data report (NY Part 253 253-2.7(j)); the federal "
+        "exemption does not carry over to the NY basis.\n"
+        "To resolve this: please provide either the pilot light sources added "
+        "to the inventory, or an engineering / common-fuel-source aggregation "
+        "that supports their inclusion, so we can recalculate the affected "
+        "Scope 1 emissions."
+    ),
+    "GT-DEMO-GAP-003": (
+        "What we observed: the Natural Gas worksheet records October usage as "
+        "281,000 MMBtu, while the October utility bill shows 28,100 MMBtu - a "
+        "10x difference.\n"
+        "What NY Part 253 requires: individual fuel volumes must be traceable "
+        "to billing or meter evidence for the same service period "
+        "(NY Part 253 253-2.7(h)).\n"
+        "To resolve this: please confirm the correct October quantity and "
+        "provide the supporting utility bill or meter read, so we can "
+        "reconcile the workbook entry (Natural Gas!D12) and reperform the "
+        "monthly and annual totals."
+    ),
+    "GT-DEMO-GAP-004": (
+        "What we observed: the Emissions Summary combines the natural gas "
+        "boilers and the diesel emergency generator into a single CO2e line.\n"
+        "What NY Part 253 requires: aggregation must preserve source-type and "
+        "unit-type distinctions so each calculation method can be verified "
+        "(NY Part 253 253-2.7(i)).\n"
+        "To resolve this: please provide a breakdown that separates the boiler "
+        "and generator activity data and emission factors, so each source "
+        "category can be independently traced."
+    ),
+    "GT-DEMO-GAP-005": (
+        "What we observed: the Biomass Boiler worksheet identifies August and "
+        "September fuel as solid biomass residue but applies the natural gas "
+        "CO2 factor of 53.06 kg CO2/MMBtu.\n"
+        "What NY Part 253 requires: the emission factor and method must match "
+        "the actual fuel type, with fossil and biogenic CO2 treated separately "
+        "(NY Part 253 253-2.7(a) and 253-2.7(e)).\n"
+        "To resolve this: please confirm the August and September fuel type and "
+        "provide the biomass calculation basis, so we can apply the correct "
+        "factor and biogenic treatment."
+    ),
+    "GT-DEMO-GAP-006": (
+        "What we observed: the evidence pack contains a single end-of-period "
+        "biomass fuel lab report, but no weekly sample logs, composite "
+        "preparation record, or sampling protocol.\n"
+        "What NY Part 253 requires: partially biogenic fuel fractions must be "
+        "supported by a weekly sampling chain and documented monthly composite "
+        "preparation (NY Part 253 253-2.7(e)).\n"
+        "To resolve this: please provide the weekly biomass sample logs, the "
+        "composite preparation record, and the sampling protocol for the "
+        "month(s) with biomass combustion."
+    ),
+    "GT-DEMO-GAP-007": (
+        "What we observed: the Natural Gas worksheet uses an estimated "
+        "December volume without a documented Part 253 3.1 substitution "
+        "method.\n"
+        "What NY Part 253 requires: missing-data substitutions must follow and "
+        "document the applicable 3.1 method and rationale "
+        "(NY Part 253 253-3.1).\n"
+        "To resolve this: please provide either the December billing evidence "
+        "to replace the estimate, or the substitution method and rationale "
+        "used."
+    ),
+    "GT-DEMO-GAP-008": (
+        "What we observed: only January through March natural gas billing is "
+        "provided to support a full-year calculation.\n"
+        "What NY Part 253 requires: annual natural gas volumes must be "
+        "traceable to account-level billing or equivalent records for the full "
+        "reporting year (NY Part 253 253-2.7(l)).\n"
+        "To resolve this: please provide the billing statements or meter "
+        "records for April through December, or a complete annual supplier "
+        "summary with account-level support."
+    ),
+    "GT-DEMO-GAP-009": (
+        "What we observed: the December bill covers Dec 16, 2023 to Jan 15, "
+        "2024, but the workbook treats the full quantity as December 1-31, "
+        "2023 with no allocation support.\n"
+        "What NY Part 253 requires: a cross-year service period must be "
+        "prorated or allocated between reporting years with documented support "
+        "(NY Part 253 253-1.5(d)).\n"
+        "To resolve this: please confirm how the Dec 16 to Jan 15 quantity "
+        "should be split between 2023 and 2024, with the allocation basis."
+    ),
+    "GT-DEMO-GAP-010": (
+        "What we observed: the workbook uses a 100-year GWP basis for the "
+        "CO2e columns.\n"
+        "What requires confirmation: the applicable NY GWP basis remains under "
+        "regulatory review in the current engagement.\n"
+        "To resolve this: please confirm the intended GWP basis and provide the "
+        "governing source used for the workbook calculation."
+    ),
+}
+
+
+def _clarification_core(view: dict) -> str:
+    ticket_id = str(view.get("id") or "").strip()
+
+    if ticket_id in CLARIFICATION_DRAFTS:
+        return CLARIFICATION_DRAFTS[ticket_id]
+
+    ticket = (
+        view.get("ticket")
+        if isinstance(view.get("ticket"), dict)
+        else {}
+    )
+    citations = _extract_citations(ticket)
+
+    basis = ""
+    if citations:
+        first = citations[0]
+        basis = " ".join(
+            value
+            for value in [
+                str(first.get("authority") or "").strip(),
+                str(first.get("citation") or "").strip(),
+            ]
+            if value
+        )
+
+    expected = _fallback_text(view.get("expected"))
+    if basis:
+        expected = f"{expected} ({basis})"
+
+    return (
+        f"What we observed: {_fallback_text(view.get('observed'))}\n"
+        f"What the requirement expects: {expected}\n"
+        f"To resolve this: {_fallback_text(view.get('action'))}"
+    )
+
+
+def _build_clarification_draft(
+    view: dict,
+    audit_setup: dict,
+) -> str:
+    profile = (
+        audit_setup.get("company_and_facility_profile")
+        if isinstance(
+            audit_setup.get("company_and_facility_profile"),
+            dict,
+        )
+        else {}
+    )
+
+    facility = _fallback_text(profile.get("facility_name"))
+    period = _fallback_text(profile.get("reporting_period"))
+    contact_name = str(
+        profile.get("client_contact_name") or ""
+    ).strip()
+
+    first_name = contact_name.split()[0] if contact_name else ""
+    greeting = f"Hi {first_name}," if first_name else "Hi,"
+
+    return (
+        f"{greeting}\n\n"
+        f"During verification of {facility} for the {period} reporting period, "
+        f"we identified an item ({view.get('id')}: {view.get('title')}) that "
+        f"needs your clarification before we can close it.\n\n"
+        f"{_clarification_core(view)}\n\n"
+        "Please reply with the supporting documentation or your explanation "
+        "within 10 business days. You can reply to this email or upload "
+        "directly to the engagement workspace.\n\n"
+        "Thank you,\n"
+        "Sustentra verification team"
+    )
+
+
+def _open_clarification_dialog_event(
+    view: dict,
+    audit_setup: dict,
+) -> None:
+    ticket_id = str(view.get("id") or "").strip()
+    if not ticket_id:
+        return
+
+    profile = (
+        audit_setup.get("company_and_facility_profile")
+        if isinstance(
+            audit_setup.get("company_and_facility_profile"),
+            dict,
+        )
+        else {}
+    )
+
+    to_key = _clarify_to_key(ticket_id)
+    subject_key = _clarify_subject_key(ticket_id)
+    message_key = _clarify_message_key(ticket_id)
+
+    if to_key not in st.session_state:
+        st.session_state[to_key] = str(
+            profile.get("client_contact_email") or ""
+        ).strip()
+
+    if subject_key not in st.session_state:
+        st.session_state[subject_key] = (
+            f"Clarification request - {ticket_id}: "
+            f"{view.get('title')}"
+        )
+
+    if message_key not in st.session_state:
+        st.session_state[message_key] = _build_clarification_draft(
+            view,
+            audit_setup,
+        )
+
+    def _dialog_body() -> None:
+        st.caption(
+            f"Preview and record a clarification request for {ticket_id}."
+        )
+
+        recipient = st.text_input("To", key=to_key)
+        subject = st.text_input("Subject", key=subject_key)
+        message = st.text_area(
+            "Message",
+            key=message_key,
+            height=320,
+        )
+
+        send_col, cancel_col = st.columns(2)
+
+        if send_col.button(
+            "Send to client",
+            key=f"gap_clarify_send_{ticket_id}",
+            type="primary",
+            use_container_width=True,
+        ):
+            if not recipient.strip():
+                st.warning("Enter a client contact email before sending.")
+                return
+
+            if not subject.strip() or not message.strip():
+                st.warning(
+                    "Subject and message are required before sending."
+                )
+                return
+
+            update_mock_auditor_action(
+                ticket_id,
+                {
+                    "action": "Request clarification",
+                    "clarification_sent": True,
+                    "clarification_to": recipient.strip(),
+                    "clarification_subject": subject.strip(),
+                    "clarification_message": message.strip(),
+                },
+            )
+
+            _set_ticket_feedback(
+                ACTION_FEEDBACK_KEY,
+                ticket_id,
+                (
+                    f"Clarification recorded for {ticket_id} "
+                    f"to {recipient.strip()}."
+                ),
+            )
+
+            st.rerun()
+
+        if cancel_col.button(
+            "Cancel",
+            key=f"gap_clarify_cancel_{ticket_id}",
+            use_container_width=True,
+        ):
+            st.rerun()
+
+    decorator = _dialog_decorator()
+
+    if callable(decorator):
+        @decorator(f"Request clarification: {ticket_id}")
+        def _show() -> None:
+            _dialog_body()
+
+        _show()
+    else:
+        with st.container(border=True):
+            _dialog_body()
+
+
 def _set_ticket_feedback(state_key: str, ticket_id: str, message: str) -> None:
     current = st.session_state.get(state_key)
     if not isinstance(current, dict):
@@ -179,7 +510,7 @@ def _render_master_list(gap_views: list[dict], selected_id: str | None) -> None:
     for view in gap_views:
         ticket_id = str(view.get("id") or "")
         title = str(view.get("title") or "Untitled finding")
-        row_label = f"{ticket_id} - {title}" if ticket_id else title
+        row_label = title
         is_selected = ticket_id == (selected_id or "")
         button_type = "primary" if is_selected else "secondary"
 
@@ -199,7 +530,8 @@ def _render_master_list(gap_views: list[dict], selected_id: str | None) -> None:
         ]
         if bool(view.get("created")):
             tags.append("Created")
-        st.caption(" | ".join([tag for tag in tags if tag]))
+        caption_parts = [ticket_id, *tags]
+        st.caption(" · ".join(item for item in caption_parts if item))
 
 
 def _render_regulation_detail_blocks(citations: list[dict], regulation_library: dict[str, dict]) -> None:
@@ -257,7 +589,7 @@ def _render_selected_finding_summary_cards(selected_view: dict) -> None:
         ("System severity", str(selected_view.get("system_severity") or "Informational")),
         ("Auditor severity", str(selected_view.get("auditor_severity") or "Not set")),
     ]
-    cols = st.columns(4)
+    cols = st.columns(4, gap="small")
     for col, (label, value) in zip(cols, cards):
         with col:
             with st.container(border=True):
@@ -265,7 +597,7 @@ def _render_selected_finding_summary_cards(selected_view: dict) -> None:
                 st.markdown(f"**{value}**")
 
 
-def _render_detail(selected_view: dict, regulation_library: dict[str, dict]) -> None:
+def _render_detail(selected_view: dict, regulation_library: dict[str, dict], audit_setup: dict) -> None:
     ticket_id = str(selected_view.get("id") or "")
     ticket = selected_view.get("ticket") if isinstance(selected_view.get("ticket"), dict) else {}
     linked_evidence = ticket.get("linked_evidence") if isinstance(ticket.get("linked_evidence"), list) else []
@@ -280,29 +612,31 @@ def _render_detail(selected_view: dict, regulation_library: dict[str, dict]) -> 
     st.markdown(f"### {selected_view.get('title')}")
     _render_selected_finding_summary_cards(selected_view)
 
-    action_cols = st.columns(5)
-    if action_cols[0].button(
+    utility_row_1 = st.columns(3, gap="small")
+    utility_row_2 = st.columns(2, gap="small")
+
+    if utility_row_1[0].button(
         "Open evidence",
         key=f"gap_action_open_evidence_{ticket_id}",
         use_container_width=True,
     ):
         open_original_evidence(_extract_primary_evidence_id(ticket))
 
-    if action_cols[1].button(
+    if utility_row_1[1].button(
         "Open workbook location",
         key=f"gap_action_open_workbook_{ticket_id}",
         use_container_width=True,
     ):
         open_workbook_location(_extract_primary_workbook_location(ticket))
 
-    if action_cols[2].button(
+    if utility_row_1[2].button(
         "Show regulation",
         key=f"gap_action_show_regulation_{ticket_id}",
         use_container_width=True,
     ):
         _open_regulation_dialog_event(ticket_id, citations, regulation_library)
 
-    if action_cols[3].button(
+    if utility_row_2[0].button(
         "Ask Sustentra AI Assistant",
         key=f"gap_action_ask_assistant_{ticket_id}",
         use_container_width=True,
@@ -311,7 +645,7 @@ def _render_detail(selected_view: dict, regulation_library: dict[str, dict]) -> 
         st.session_state["selected_chat_question"] = question
         ask_regulatory_assistant(ticket_id, suggested_prompt=question)
 
-    if action_cols[4].button(
+    if utility_row_2[1].button(
         "Draft auditor note",
         key=f"gap_action_draft_note_{ticket_id}",
         use_container_width=True,
@@ -343,11 +677,9 @@ def _render_detail(selected_view: dict, regulation_library: dict[str, dict]) -> 
         key=f"gap_decision_clarify_{ticket_id}",
         use_container_width=True,
     ):
-        update_mock_auditor_action(ticket_id, {"action": "Request clarification"})
-        _set_ticket_feedback(
-            ACTION_FEEDBACK_KEY,
-            ticket_id,
-            f"Saved Request clarification for {ticket_id}.",
+        _open_clarification_dialog_event(
+            selected_view,
+            audit_setup,
         )
 
     action_feedback = _consume_ticket_feedback(ACTION_FEEDBACK_KEY, ticket_id)
@@ -406,12 +738,18 @@ def _render_detail(selected_view: dict, regulation_library: dict[str, dict]) -> 
         with st.expander("Rule reasoning details", expanded=False):
             render_reasoning_trail(rule_results)
 
+st.set_page_config(
+    page_title="Gap Analysis",
+    layout="wide",
+)
 
 init_session_state()
+_inject_page6_layout_style()
 st.title("Gap Analysis")
 st.caption("Auditor-facing findings with evidence trace, workbook trace, and regulatory basis.")
 render_prepared_demo_disclosure()
-render_audit_setup_context(get_audit_setup())
+audit_setup = get_audit_setup()
+render_audit_setup_context(audit_setup)
 
 analysis_response = get_analysis_response()
 if not analysis_response:
@@ -486,7 +824,10 @@ if selected_id:
 selected_view = find_gap_view(filtered_views, selected_id)
 regulation_library = load_regulation_library()
 
-master_col, detail_col = st.columns([1.25, 2.75], gap="large")
+master_col, detail_col = st.columns(
+    [1.7, 3.3],
+    gap="medium",
+)
 with master_col:
     _render_master_list(filtered_views, selected_id)
 
@@ -497,4 +838,4 @@ with detail_col:
     if not isinstance(selected_view, dict):
         st.info("Select a finding from the list to review its detail.")
     else:
-        _render_detail(selected_view, regulation_library)
+        _render_detail(selected_view, regulation_library, audit_setup)

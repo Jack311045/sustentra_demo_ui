@@ -5,6 +5,8 @@
     "facility_address": "4797 River Road, Baldwinsville, NY 13027",
     "company_facility_identifier": "AB-BWV",
     "duns_number": "00-123-4567",
+    "client_contact_name": "Dana Whitfield",
+    "client_contact_email": "dana.whitfield@ab-baldwinsville.example.com",
     "industry": "Beverage manufacturing",
     "facility_type": "Brewery",
     "reporting_period": "2023-01-01 to 2023-12-31"

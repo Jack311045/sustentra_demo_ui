@@ -56,3 +56,14 @@ def test_disclosure_and_advanced_json_are_preserved_without_workflow_boxes() -> 
     assert "render_prepared_demo_disclosure()" in source
     assert "Advanced setup JSON" in source
     assert "build_engagement_expectation_summary(" in source
+
+
+def test_client_contact_fields_render_and_save() -> None:
+    source = _read("pages/1_Audit_Setup.py")
+
+    assert "Client contact name" in source
+    assert "Client contact email" in source
+    assert 'key="audit_client_contact_name"' in source
+    assert 'key="audit_client_contact_email"' in source
+    assert '"client_contact_name": client_contact_name' in source
+    assert '"client_contact_email": client_contact_email' in source
