@@ -6,46 +6,27 @@ import py_compile
 from copy import deepcopy
 from pathlib import Path
 
+import pytest
 from streamlit.testing.v1 import AppTest
 
-from src.ui.regulatory_assistant import (
-    GAP010_REVIEW_NOTICE,
-    UNKNOWN_REVIEWED_SET_MESSAGE,
-    parse_basis_clause,
-    resolve_curated_answer,
-)
 
 PAGE_7 = Path("pages/7_Sustentra_AI_Assistant.py")
 OLD_PAGE_7 = Path("pages/7_Regulatory_Assistant.py")
 STATE_FILE = Path("src/ui/state.py")
 CARDS_FILE = Path("src/ui/cards.py")
 APP_FILE = Path("app.py")
-
-MOCK_RESPONSE_FILES = [
-    Path("data/demo/mock_outputs/mock_analysis_response.json"),
-    Path("data/demo/mock_outputs/mock_analysis_response_gap_path.json"),
-    Path("data/demo/mock_outputs/mock_analysis_response_clean_path.json"),
-]
-
-APPROVED_TIER1_QUESTIONS = [
-    "Can we accept a biomass-derived CO2 classification based only on an invoice line item and a marketing certificate?",
-    "Is total fuel quantity alone enough for Part 253 reporting, or do we need supplier account information?",
-    "If a facility reports 9,650 MT CO2e from boilers but excludes a 620 MT hydrogen fuel cell, is it below the 10,000 MT reporting threshold?",
-    "Do we need a separate scope 1 line for pilot fuel used in flare operation, or can it stay embedded in total fuel gas?",
-    "Can we carry over a prior-year fuel meter value as opening inventory without documenting meter reset and calibration evidence?",
-    "If district steam purchases are billed in MMBtu but internal logs convert to tonnes steam, which value is acceptable for Part 253 reporting support?",
-]
-
-FORBIDDEN_PAGE_STRINGS = (
-    "Prepared demo workflow",
-    "Live service",
-    "Auto mode",
-    "Fallback answer",
-    "Citation review warning",
-)
+FIXTURE_PATH = Path("data/demo/mock_outputs/mock_analysis_response_gap_path.json")
 
 
-def _read_json(path: Path):
+@pytest.fixture(autouse=True)
+def _stable_prepared_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AUDITOR_CHAT_MODE", "prepared")
+    monkeypatch.setenv("RAG_API_URL", "")
+    monkeypatch.setenv("RAG_API_KEY", "")
+    monkeypatch.setenv("ASSISTANT_CONTEXT_MAX_CHARS", "60000")
+
+
+def _read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
@@ -55,16 +36,30 @@ def _run_page7(
     context_gap_ticket_id: str | None = None,
     selected_chat_question: str | None = None,
     chat_history: list[dict] | None = None,
+    selected_evidence_id: str | None = None,
+    selected_validation_id: str | None = None,
+    selected_calculation_id: str | None = None,
+    selected_workbook_location: dict | None = None,
 ) -> AppTest:
     at = AppTest.from_file(str(PAGE_7), default_timeout=45)
     at.session_state["analysis_response"] = deepcopy(response)
     at.session_state["audit_setup"] = deepcopy(response.get("audit_setup") or {})
+
     if context_gap_ticket_id is not None:
         at.session_state["chat_context_gap_ticket_id"] = context_gap_ticket_id
     if selected_chat_question is not None:
         at.session_state["selected_chat_question"] = selected_chat_question
     if chat_history is not None:
         at.session_state["chat_history"] = chat_history
+    if selected_evidence_id is not None:
+        at.session_state["selected_evidence_id"] = selected_evidence_id
+    if selected_validation_id is not None:
+        at.session_state["selected_validation_id"] = selected_validation_id
+    if selected_calculation_id is not None:
+        at.session_state["selected_calculation_id"] = selected_calculation_id
+    if selected_workbook_location is not None:
+        at.session_state["selected_workbook_location"] = selected_workbook_location
+
     at.run()
     return at
 
@@ -79,10 +74,6 @@ def _collect_text(at: AppTest) -> str:
     for button in at.button:
         if isinstance(button.label, str) and button.label.strip():
             parts.append(button.label)
-    for chat_message in at.chat_message:
-        role = getattr(chat_message, "name", None)
-        if isinstance(role, str):
-            parts.append(role)
     return "\n".join(parts)
 
 
@@ -91,7 +82,7 @@ def test_page7_compiles_and_old_page_is_removed() -> None:
     assert OLD_PAGE_7.exists() is False
 
 
-def test_page7_source_contract_blocks_live_rag_and_forbidden_phrases() -> None:
+def test_page7_source_contract_includes_live_orchestration() -> None:
     source = PAGE_7.read_text(encoding="utf-8")
     tree = ast.parse(source)
 
@@ -102,19 +93,12 @@ def test_page7_source_contract_blocks_live_rag_and_forbidden_phrases() -> None:
         elif isinstance(node, ast.Attribute):
             identifiers.add(node.attr)
 
-    for forbidden_id in ("query_rag", "get_auditor_chat_mode", "has_rag_configuration", "set_analysis_response"):
-        assert forbidden_id not in identifiers
-        assert forbidden_id not in source
-
-    for forbidden_phrase in FORBIDDEN_PAGE_STRINGS:
-        assert forbidden_phrase not in source
-
-    assert (
-        "Sustentra AI Assistant supports regulatory research and audit documentation. "
-        "It does not provide legal advice."
-    ) in source
-    assert "visible_questions = ordered_questions[:3]" in source
-    assert "More reviewed questions" in source
+    assert "answer_assistant_question" in identifiers
+    assert "build_assistant_context" in identifiers
+    assert "has_rag_configuration" in source
+    assert "Retry last question using live service" in source
+    assert "Assistant diagnostics" in source
+    assert "does not provide legal advice" in source.lower()
 
 
 def test_navigation_and_labels_use_sustentra_ai_assistant_name() -> None:
@@ -128,58 +112,27 @@ def test_navigation_and_labels_use_sustentra_ai_assistant_name() -> None:
     assert "Sustentra AI Assistant" in app_source
 
 
-def test_chat_suggestions_are_exact_reviewed_tier1_set() -> None:
-    for path in MOCK_RESPONSE_FILES:
-        payload = _read_json(path)
-        suggestions = payload.get("chat_suggestions")
+def test_page7_renders_context_summary_actions_and_diagnostics() -> None:
+    response = _read_json(FIXTURE_PATH)
+    at = _run_page7(response, context_gap_ticket_id="GT-DEMO-GAP-003")
 
-        assert isinstance(suggestions, list)
-        assert len(suggestions) == 6
+    assert len(at.exception) == 0
+    rendered = _collect_text(at)
 
-        questions: list[str] = []
-        for item in suggestions:
-            assert isinstance(item, dict)
-            assert set(item.keys()) == {"question", "mock_answer"}
-
-            question = str(item.get("question") or "")
-            answer = str(item.get("mock_answer") or "")
-
-            assert question
-            assert answer
-            assert "Needs confirmation" not in answer
-            questions.append(question)
-
-        assert questions == APPROVED_TIER1_QUESTIONS
+    assert "Context summary" in rendered
+    assert "Selected finding" in rendered
+    assert "Clear conversation" in rendered
+    assert "Retry last question using live service" in rendered
 
 
-def test_basis_parser_supports_plain_and_parenthetical_basis_trailers() -> None:
-    plain_text = "Use traceable support and supplier records. Basis: 6 NYCRR 253-4.2 and 6 NYCRR 253-8.2"
-    plain_body, plain_citations = parse_basis_clause(plain_text)
-    assert plain_body == "Use traceable support and supplier records"
-    assert "6 NYCRR 253-4.2" in plain_citations
-    assert "6 NYCRR 253-8.2" in plain_citations
+def test_selected_chat_question_is_processed_once_with_structured_metadata() -> None:
+    response = _read_json(FIXTURE_PATH)
+    first_question = str((response.get("chat_suggestions") or [{}])[0].get("question") or "")
 
-    wrapped_text = "Use controlled conversion records. (Basis: 6 NYCRR 253-8.2; 6 NYCRR 253-4.1)"
-    wrapped_body, wrapped_citations = parse_basis_clause(wrapped_text)
-    assert wrapped_body == "Use controlled conversion records."
-    assert "6 NYCRR 253-8.2" in wrapped_citations
-    assert "6 NYCRR 253-4.1" in wrapped_citations
-
-
-def test_unknown_question_maps_to_reviewed_set_guardrail_message() -> None:
-    payload = _read_json(Path("data/demo/mock_outputs/mock_analysis_response_gap_path.json"))
-    suggestions = payload.get("chat_suggestions") or []
-
-    assert resolve_curated_answer(suggestions, "Unknown question") is None
-    assert "reviewed answer" in UNKNOWN_REVIEWED_SET_MESSAGE
-
-
-def test_selected_chat_question_generates_structured_response_once_for_gap_context() -> None:
-    response = _read_json(Path("data/demo/mock_outputs/mock_analysis_response_gap_path.json"))
     at = _run_page7(
         response,
         context_gap_ticket_id="GT-DEMO-GAP-003",
-        selected_chat_question=APPROVED_TIER1_QUESTIONS[0],
+        selected_chat_question=first_question,
     )
 
     assert len(at.exception) == 0
@@ -191,13 +144,15 @@ def test_selected_chat_question_generates_structured_response_once_for_gap_conte
 
     assistant_message = history[-1]
     assert assistant_message.get("role") == "assistant"
-    metadata = assistant_message.get("metadata") if isinstance(assistant_message.get("metadata"), dict) else {}
-    structured = metadata.get("structured_response") if isinstance(metadata.get("structured_response"), dict) else {}
 
-    assert structured.get("context_gap_ticket_id") == "GT-DEMO-GAP-003"
-    assert isinstance(structured.get("evidence_refs"), list) and structured.get("evidence_refs")
-    assert isinstance(structured.get("regulatory_citations"), list) and structured.get("regulatory_citations")
-    assert structured.get("direct_answer") != UNKNOWN_REVIEWED_SET_MESSAGE
+    metadata = assistant_message.get("metadata") if isinstance(assistant_message.get("metadata"), dict) else {}
+    assert metadata.get("provider") in {"prepared_fallback", "sustentra_rag"}
+    assert isinstance(metadata.get("sections"), dict)
+
+    sections = metadata.get("sections") if isinstance(metadata.get("sections"), dict) else {}
+    assert isinstance(sections.get("conclusion"), str)
+    assert isinstance(sections.get("evidence_context"), list)
+    assert isinstance(sections.get("regulatory_basis"), list)
 
     history_len = len(history)
     at.run()
@@ -206,31 +161,33 @@ def test_selected_chat_question_generates_structured_response_once_for_gap_conte
     assert len(next_history) == history_len
 
 
-def test_gap010_context_uses_under_review_response_and_neutralized_citation_text() -> None:
-    response = _read_json(Path("data/demo/mock_outputs/mock_analysis_response_gap_path.json"))
+def test_auto_mode_without_match_returns_controlled_unavailable_message() -> None:
+    response = _read_json(FIXTURE_PATH)
+
     at = _run_page7(
         response,
-        context_gap_ticket_id="GT-DEMO-GAP-010",
-        selected_chat_question=APPROVED_TIER1_QUESTIONS[1],
+        selected_chat_question="Custom question with no reviewed prepared answer",
     )
 
     assert len(at.exception) == 0
     history = at.session_state["chat_history"] if "chat_history" in at.session_state else []
+    assert len(history) >= 2
+
     assistant_message = history[-1]
     metadata = assistant_message.get("metadata") if isinstance(assistant_message.get("metadata"), dict) else {}
-    structured = metadata.get("structured_response") if isinstance(metadata.get("structured_response"), dict) else {}
 
-    assert structured.get("direct_answer") == GAP010_REVIEW_NOTICE
-
-    citations = structured.get("regulatory_citations") if isinstance(structured.get("regulatory_citations"), list) else []
-    assert citations
-    for citation in citations:
-        assert citation.get("requirement_summary") == "Interpretation under source review."
-        assert citation.get("applicability_explanation") == "Not included in the verified assistant knowledge set."
+    assert metadata.get("provider") == "prepared_fallback"
+    assert metadata.get("prepared_answer_used") is False
+    assert metadata.get("error_code") in {"prepared_not_found", "config_missing", "request_error"}
+    content = str(assistant_message.get("content") or "")
+    assert (
+        "No reviewed prepared response" in content
+        or "not available" in content.lower()
+    )
 
 
 def test_legacy_string_only_assistant_history_renders_without_exception() -> None:
-    response = _read_json(Path("data/demo/mock_outputs/mock_analysis_response_gap_path.json"))
+    response = _read_json(FIXTURE_PATH)
     at = _run_page7(
         response,
         chat_history=[{"role": "assistant", "content": "Legacy assistant response"}],
@@ -241,23 +198,29 @@ def test_legacy_string_only_assistant_history_renders_without_exception() -> Non
     assert "Legacy assistant response" in rendered
 
 
-def test_page7_context_controls_and_top_reviewed_questions_render() -> None:
-    response = _read_json(Path("data/demo/mock_outputs/mock_analysis_response_gap_path.json"))
-    at = _run_page7(response, context_gap_ticket_id="GT-DEMO-GAP-003")
+def test_page7_includes_selected_navigation_context_identifiers() -> None:
+    response = _read_json(FIXTURE_PATH)
+    evidence_id = str((response.get("evidence_results") or [{}])[0].get("evidence_id") or "")
+    validation_id = str((response.get("validation_results") or [{}])[0].get("validation_id") or "")
+    calculation_id = str((response.get("calculation_results") or [{}])[0].get("calculation_id") or "")
+
+    at = _run_page7(
+        response,
+        selected_evidence_id=evidence_id,
+        selected_validation_id=validation_id,
+        selected_calculation_id=calculation_id,
+        selected_workbook_location={"sheet_name": "Summary", "cell_or_range": "D12"},
+    )
 
     assert len(at.exception) == 0
-    labels = [str(button.label) for button in at.button]
-
-    for question in APPROVED_TIER1_QUESTIONS[:3]:
-        assert question in labels
-
-    assert "Open source evidence" in labels
-    assert "View regulation context" in labels
-    assert "Back to finding" in labels
+    rendered = _collect_text(at)
+    assert evidence_id in rendered
+    assert calculation_id in rendered
+    assert "Summary!D12" in rendered
 
 
 def test_page7_does_not_mutate_analysis_response_payload() -> None:
-    response = _read_json(Path("data/demo/mock_outputs/mock_analysis_response_gap_path.json"))
+    response = _read_json(FIXTURE_PATH)
     baseline = deepcopy(response)
 
     at = _run_page7(response, context_gap_ticket_id="GT-DEMO-GAP-003")

@@ -17,8 +17,16 @@ def test_chat_mode_reads_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AUDITOR_CHAT_MODE", "real")
     assert rag_client.get_auditor_chat_mode() == "real"
 
+    monkeypatch.setenv("AUDITOR_CHAT_MODE", "prepared")
+    assert rag_client.get_auditor_chat_mode() == "prepared"
+
     monkeypatch.setenv("AUDITOR_CHAT_MODE", "mock")
-    assert rag_client.get_auditor_chat_mode() == "mock"
+    assert rag_client.get_auditor_chat_mode() == "prepared"
+
+
+def test_chat_mode_invalid_value_falls_back_to_auto(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AUDITOR_CHAT_MODE", "unexpected-value")
+    assert rag_client.get_auditor_chat_mode() == "auto"
 
 
 def test_has_rag_configuration_uses_env(monkeypatch: pytest.MonkeyPatch) -> None:

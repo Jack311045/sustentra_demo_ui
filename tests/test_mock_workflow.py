@@ -64,14 +64,14 @@ def test_evidence_intake_has_prepared_workflow_button_and_disclosure() -> None:
     assert "current build uses prepared" in source.lower()
 
 
-def test_sustentra_ai_assistant_disclaimer_and_no_live_rag_strings() -> None:
+def test_sustentra_ai_assistant_disclaimer_and_live_fallback_strings() -> None:
     source = Path("pages/7_Sustentra_AI_Assistant.py").read_text(encoding="utf-8")
 
     assert "does not provide legal advice" in source
-    assert "query_rag" not in source
-    assert "get_auditor_chat_mode" not in source
-    assert "Live service" not in source
-    assert "Chat mode" not in source
+    assert "answer_assistant_question" in source
+    assert "build_assistant_context" in source
+    assert "Retry last question using live service" in source
+    assert "Assistant diagnostics" in source
 
 
 def test_workflow_progress_renderer_removed() -> None:

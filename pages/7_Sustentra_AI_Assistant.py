@@ -1,35 +1,49 @@
 from __future__ import annotations
 
+import re
+from typing import Any
+
 import streamlit as st
 
-from src.ui.formatting import safe_text, sanitize_source_snippet
-from src.ui.regulatory_assistant import (
-    GAP010_REVIEW_NOTICE,
-    UNKNOWN_REVIEWED_SET_MESSAGE,
-    build_audit_context_lines,
-    parse_basis_clause,
-    resolve_curated_answer,
+from src.api import rag_client
+from src.api.assistant_service import (
+    answer_assistant_question,
+    build_prepared_answers,
+    current_chat_mode,
 )
+from src.ui.assistant_context import NOT_AVAILABLE_IN_CONTEXT, build_assistant_context
+from src.ui.formatting import safe_text, sanitize_source_snippet
+from src.ui.regulatory_assistant import parse_basis_clause
 from src.ui.state import (
     append_chat_message,
+    clear_chat_history,
     get_analysis_response,
     get_audit_setup,
     get_chat_context_gap_ticket_id,
     get_chat_history,
+    get_selected_calculation_id,
+    get_selected_evidence_id,
+    get_selected_validation_id,
+    get_selected_workbook_location,
     init_session_state,
-    open_original_evidence,
     set_chat_context_gap_ticket_id,
-    set_selected_gap_ticket_id,
 )
 
 
-PREFERRED_VISIBLE_QUESTIONS = [
-    "Can we accept a biomass-derived CO2 classification based only on an invoice line item and a marketing certificate?",
-    "Is total fuel quantity alone enough for Part 253 reporting, or do we need supplier account information?",
-    "If a facility reports 9,650 MT CO2e from boilers but excludes a 620 MT hydrogen fuel cell, is it below the 10,000 MT reporting threshold?",
-]
+QUESTION_QUEUE_KEY = "selected_chat_question"
+FORCE_REAL_RETRY_KEY = "assistant_force_real_retry"
+INTERNAL_SUGGESTION_EXCLUSIONS = {
+    "Which gaps are most important to show in the demo?",
+}
 
-REGULATION_CONTEXT_STATE_KEY = "assistant_selected_regulation_context"
+
+def _display_text(value: Any) -> str:
+    text = safe_text(value).strip()
+    if not text:
+        return NOT_AVAILABLE_IN_CONTEXT
+    if text.lower().startswith("needs confirmation"):
+        return NOT_AVAILABLE_IN_CONTEXT
+    return text
 
 
 def _find_ticket(gap_tickets: list[dict], ticket_id: str | None) -> dict | None:
@@ -38,568 +52,562 @@ def _find_ticket(gap_tickets: list[dict], ticket_id: str | None) -> dict | None:
     for ticket in gap_tickets:
         if not isinstance(ticket, dict):
             continue
-        if str(ticket.get("gap_ticket_id") or "") == str(ticket_id):
+        if safe_text(ticket.get("gap_ticket_id")).strip() == safe_text(ticket_id).strip():
             return ticket
     return None
 
 
-def _find_evidence_record(evidence_results: list[dict], evidence_id: str) -> dict | None:
-    for record in evidence_results:
-        if not isinstance(record, dict):
+def _ticket_title(ticket: dict) -> str:
+    return (
+        safe_text(ticket.get("auditor_title")).strip()
+        or safe_text(ticket.get("title")).strip()
+        or "Finding"
+    )
+
+
+def _visible_suggestions(chat_suggestions: list[dict]) -> list[str]:
+    questions: list[str] = []
+    for item in chat_suggestions:
+        if not isinstance(item, dict):
             continue
-        if str(record.get("evidence_id") or "") == evidence_id:
-            return record
+        question = safe_text(item.get("question")).strip()
+        if not question:
+            continue
+        if question in INTERNAL_SUGGESTION_EXCLUSIONS:
+            continue
+        if question not in questions:
+            questions.append(question)
+    return questions
+
+
+def _queue_question(question: str, *, force_real: bool = False) -> None:
+    st.session_state[QUESTION_QUEUE_KEY] = question
+    if force_real:
+        st.session_state[FORCE_REAL_RETRY_KEY] = True
+
+
+def _pop_queued_question() -> tuple[str | None, bool]:
+    queued = st.session_state.pop(QUESTION_QUEUE_KEY, None)
+    force_real = bool(st.session_state.pop(FORCE_REAL_RETRY_KEY, False))
+    if isinstance(queued, str) and queued.strip():
+        return queued.strip(), force_real
+    return None, force_real
+
+
+def _last_user_question(history: list[dict]) -> str | None:
+    for item in reversed(history):
+        if not isinstance(item, dict):
+            continue
+        if safe_text(item.get("role")).strip() != "user":
+            continue
+        content = safe_text(item.get("content")).strip()
+        if content:
+            return content
     return None
 
 
-def _resolve_evidence_title(evidence_record: dict | None, evidence_ref: dict) -> str:
-    if isinstance(evidence_record, dict):
-        document_type = safe_text(evidence_record.get("document_type")).strip()
-        if document_type:
-            return document_type
-        file_name = safe_text(evidence_record.get("file_name")).strip()
-        if file_name:
-            return file_name
-    return safe_text(evidence_ref.get("evidence_id") or "Evidence record")
+def _sanitize_diag_text(value: Any) -> str:
+    text = safe_text(value).strip()
+    text = re.sub(r"Bearer\s+[A-Za-z0-9._\-]+", "Bearer [REDACTED]", text)
+    text = re.sub(r"sk-[A-Za-z0-9._\-]+", "[REDACTED]", text)
+    if len(text) > 220:
+        text = text[:217].rstrip() + "..."
+    return text
 
 
-def _build_evidence_refs(ticket: dict | None, evidence_results: list[dict]) -> list[dict]:
-    if not isinstance(ticket, dict):
-        return []
+@st.cache_data(ttl=45, show_spinner=False)
+def _cached_health_snapshot(cache_token: str) -> dict:
+    try:
+        payload = rag_client.check_rag_health()
+        return {"ok": True, "category": "healthy", "message": "Service reachable", "payload": payload}
+    except rag_client.RagApiError as exc:
+        return {
+            "ok": False,
+            "category": "unhealthy",
+            "message": _sanitize_diag_text(exc),
+            "payload": {},
+        }
 
-    linked_evidence = ticket.get("linked_evidence") if isinstance(ticket.get("linked_evidence"), list) else []
+
+def _citation_requires_review(citation_validation: Any) -> bool:
+    if not isinstance(citation_validation, dict):
+        return False
+    status = safe_text(citation_validation.get("status")).strip().lower()
+    if status in {"warning", "flagged", "fail", "invalid"}:
+        return True
+    if citation_validation.get("valid") is False:
+        return True
+    return bool(safe_text(citation_validation.get("warning")).strip())
+
+
+def _normalize_sources(sources: list[dict]) -> list[dict]:
     rows: list[dict] = []
-
-    for item in linked_evidence:
-        if not isinstance(item, dict):
+    for source in sources:
+        if not isinstance(source, dict):
             continue
-        evidence_id = safe_text(item.get("evidence_id")).strip()
-        if not evidence_id:
-            continue
-
-        evidence_record = _find_evidence_record(evidence_results, evidence_id)
-        source_locations = item.get("source_locations") if isinstance(item.get("source_locations"), list) else []
-        first_source = source_locations[0] if source_locations and isinstance(source_locations[0], dict) else {}
-        page_number = first_source.get("page_number")
-        snippet = sanitize_source_snippet(first_source.get("source_snippet"))
+        title = (
+            safe_text(source.get("title")).strip()
+            or safe_text(source.get("provisionKey")).strip()
+            or "Retrieved source"
+        )
+        authority = (
+            safe_text(source.get("authority")).strip()
+            or safe_text(source.get("regulation")).strip()
+            or safe_text(source.get("jurisdiction")).strip()
+        )
+        citation = (
+            safe_text(source.get("sectionId")).strip()
+            or safe_text(source.get("section")).strip()
+            or safe_text(source.get("citation")).strip()
+            or safe_text(source.get("provisionKey")).strip()
+        )
+        excerpt = (
+            safe_text(source.get("rawText")).strip()
+            or safe_text(source.get("text")).strip()
+            or safe_text(source.get("content")).strip()
+            or safe_text(source.get("snippet")).strip()
+        )
+        url = (
+            safe_text(source.get("source_url")).strip()
+            or safe_text(source.get("url")).strip()
+            or safe_text(source.get("link")).strip()
+            or ""
+        )
 
         rows.append(
             {
-                "evidence_id": evidence_id,
-                "title": _resolve_evidence_title(evidence_record, item),
-                "page_number": page_number,
-                "snippet": snippet,
-                "relationship": safe_text(item.get("relationship_to_gap")).replace("_", " ").strip(),
+                "title": title,
+                "authority": authority,
+                "citation": citation,
+                "excerpt": _display_text(sanitize_source_snippet(excerpt)) if excerpt else "",
+                "url": url,
             }
         )
-
     return rows
 
 
-def _build_workbook_refs(ticket: dict | None) -> list[str]:
+def _context_evidence_lines(ticket: dict | None, assistant_context: dict) -> list[str]:
+    lines: list[str] = []
+    if isinstance(ticket, dict):
+        gap_id = safe_text(ticket.get("gap_ticket_id")).strip()
+        lines.append(f"Finding: {gap_id} - {_ticket_title(ticket)}")
+
+        issue = ticket.get("issue") if isinstance(ticket.get("issue"), dict) else {}
+        observed = _display_text(issue.get("observed_condition"))
+        if observed != NOT_AVAILABLE_IN_CONTEXT:
+            lines.append(f"Observed condition: {observed}")
+
+        linked_evidence = ticket.get("linked_evidence") if isinstance(ticket.get("linked_evidence"), list) else []
+        evidence_ids = [
+            safe_text(item.get("evidence_id")).strip()
+            for item in linked_evidence
+            if isinstance(item, dict) and safe_text(item.get("evidence_id")).strip()
+        ]
+        if evidence_ids:
+            lines.append("Evidence IDs: " + ", ".join(evidence_ids))
+
+        linked_workbook = (
+            ticket.get("linked_workbook_locations")
+            if isinstance(ticket.get("linked_workbook_locations"), list)
+            else []
+        )
+        workbook_refs = []
+        for item in linked_workbook:
+            if not isinstance(item, dict):
+                continue
+            sheet = safe_text(item.get("sheet_name")).strip()
+            cell = safe_text(item.get("cell_or_range")).strip()
+            if sheet and cell:
+                workbook_refs.append(f"{sheet}!{cell}")
+        if workbook_refs:
+            lines.append("Workbook trace: " + ", ".join(workbook_refs))
+
+    active_context = assistant_context.get("active_context") if isinstance(assistant_context.get("active_context"), dict) else {}
+    selected_evidence_id = safe_text(active_context.get("active_evidence_id")).strip()
+    selected_validation_id = safe_text(active_context.get("active_validation_id")).strip()
+    selected_calculation_id = safe_text(active_context.get("active_calculation_id")).strip()
+
+    if selected_evidence_id:
+        lines.append(f"Selected evidence context: {selected_evidence_id}")
+    if selected_validation_id:
+        lines.append(f"Selected validation context: {selected_validation_id}")
+    if selected_calculation_id:
+        lines.append(f"Selected calculation context: {selected_calculation_id}")
+
+    if not lines:
+        lines.append(NOT_AVAILABLE_IN_CONTEXT)
+    return lines
+
+
+def _gap_citation_lines(ticket: dict | None) -> list[str]:
     if not isinstance(ticket, dict):
         return []
-    linked = (
-        ticket.get("linked_workbook_locations")
-        if isinstance(ticket.get("linked_workbook_locations"), list)
-        else []
-    )
-    rows: list[str] = []
-    for item in linked:
-        if not isinstance(item, dict):
-            continue
-        sheet = safe_text(item.get("sheet_name")).strip()
-        cell = safe_text(item.get("cell_or_range")).strip()
-        if sheet and cell:
-            rows.append(f"{sheet}!{cell}")
-    return rows
-
-
-def _normalize_citation_row(item: dict, *, context_gap_id: str | None) -> dict:
-    authority = safe_text(item.get("authority")).strip()
-    citation = safe_text(item.get("citation")).strip()
-    requirement = safe_text(item.get("requirement_summary")).strip()
-    applicability = safe_text(item.get("applicability_explanation")).strip()
-    source_url = safe_text(item.get("source_url")).strip() or None
-
-    if context_gap_id == "GT-DEMO-GAP-010":
-        requirement = "Interpretation under source review."
-        applicability = "Not included in the verified assistant knowledge set."
-
-    return {
-        "authority": authority,
-        "citation": citation,
-        "requirement_summary": requirement,
-        "applicability_explanation": applicability,
-        "source_url": source_url,
-    }
-
-
-def _build_ticket_citations(ticket: dict | None) -> list[dict]:
-    if not isinstance(ticket, dict):
-        return []
-    context_gap_id = safe_text(ticket.get("gap_ticket_id")).strip()
     basis = ticket.get("basis") if isinstance(ticket.get("basis"), dict) else {}
     citations = basis.get("regulatory_citations") if isinstance(basis.get("regulatory_citations"), list) else []
-
-    rows: list[dict] = []
+    rows: list[str] = []
     for item in citations:
         if not isinstance(item, dict):
             continue
-        rows.append(_normalize_citation_row(item, context_gap_id=context_gap_id))
+        authority = safe_text(item.get("authority")).strip()
+        citation = safe_text(item.get("citation")).strip()
+        summary = safe_text(item.get("requirement_summary")).strip()
+        prefix = " ".join(part for part in [authority, citation] if part).strip()
+        if prefix and summary:
+            rows.append(f"{prefix}: {summary}")
+        elif prefix:
+            rows.append(prefix)
     return rows
 
 
-def _build_basis_citations_for_unscoped_answer(citations: list[str]) -> list[dict]:
-    rows: list[dict] = []
-    for citation in citations:
-        clean = safe_text(citation).strip()
-        if not clean:
-            continue
-        rows.append(
-            {
-                "authority": "Reviewed basis",
-                "citation": clean,
-                "requirement_summary": "",
-                "applicability_explanation": "",
-                "source_url": None,
-            }
-        )
-    return rows
+def _next_step(ticket: dict | None, provider: str) -> str:
+    if isinstance(ticket, dict):
+        remediation = ticket.get("remediation") if isinstance(ticket.get("remediation"), dict) else {}
+        action = safe_text(remediation.get("recommended_action")).strip()
+        if action:
+            return action
+    if provider == "sustentra_rag":
+        return "Review the cited sources and align any auditor note with the retrieved regulatory basis."
+    return "Review the linked finding context and select another reviewed question if additional support is needed."
 
 
-def _set_regulation_context(citation: dict) -> None:
-    st.session_state[REGULATION_CONTEXT_STATE_KEY] = citation
+def _build_sections(result: dict, ticket: dict | None, assistant_context: dict) -> dict:
+    answer_text = _display_text(result.get("answer"))
+    prepared_used = bool(result.get("prepared_answer_used"))
+    provider = safe_text(result.get("provider")).strip()
 
-
-def _render_regulation_context_panel(context_ticket: dict | None) -> None:
-    selected = st.session_state.get(REGULATION_CONTEXT_STATE_KEY)
-    if not isinstance(selected, dict):
-        return
-
-    authority = safe_text(selected.get("authority")).strip()
-    citation = safe_text(selected.get("citation")).strip()
-    summary = safe_text(selected.get("requirement_summary")).strip()
-    applicability = safe_text(selected.get("applicability_explanation")).strip()
-    source_url = safe_text(selected.get("source_url")).strip()
-
-    st.markdown("### Regulation context")
-    with st.container(border=True):
-        heading = " ".join([part for part in [authority, citation] if part]).strip()
-        if heading:
-            st.markdown(f"**{heading}**")
-        if summary:
-            st.write(summary)
-        if applicability:
-            st.caption(f"Applicability: {applicability}")
-
-        action_cols = st.columns(2)
-        if source_url:
-            action_cols[0].link_button("Open source link", source_url, use_container_width=True)
-        if isinstance(context_ticket, dict):
-            gap_id = safe_text(context_ticket.get("gap_ticket_id")).strip()
-            if gap_id and action_cols[1].button("Back to finding", key="reg_context_back_to_finding", use_container_width=True):
-                set_selected_gap_ticket_id(gap_id)
-                switch_page = getattr(st, "switch_page", None)
-                if callable(switch_page):
-                    switch_page("pages/6_Gap_Analysis.py")
-                else:
-                    st.info("Open Gap Analysis from the sidebar.")
-
-
-def _render_citation_rows(citations: list[dict], key_prefix: str) -> None:
-    for index, citation in enumerate(citations):
-        authority = safe_text(citation.get("authority")).strip()
-        citation_code = safe_text(citation.get("citation")).strip()
-        summary = safe_text(citation.get("requirement_summary")).strip()
-        applicability = safe_text(citation.get("applicability_explanation")).strip()
-        source_url = safe_text(citation.get("source_url")).strip()
-
-        with st.container(border=True):
-            header = " ".join([part for part in [authority, citation_code] if part]).strip()
-            if header:
-                st.markdown(f"**{header}**")
-            if summary:
-                st.write(summary)
-            if applicability:
-                st.caption(f"Applicability: {applicability}")
-
-            control_cols = st.columns(2)
-            if control_cols[0].button(
-                "View regulation context",
-                key=f"{key_prefix}_view_regulation_{index}",
-                use_container_width=True,
-            ):
-                _set_regulation_context(citation)
-            if source_url:
-                control_cols[1].link_button(
-                    "Open source link",
-                    source_url,
-                    use_container_width=True,
-                )
-
-
-def _build_structured_response(
-    question: str,
-    chat_suggestions: list[dict],
-    context_ticket: dict | None,
-    analysis_response: dict,
-    audit_setup: dict,
-) -> dict:
-    curated_answer = resolve_curated_answer(chat_suggestions, question)
-    direct_answer = UNKNOWN_REVIEWED_SET_MESSAGE if curated_answer is None else curated_answer
-
-    body_text, parsed_basis_citations = parse_basis_clause(direct_answer)
-    if curated_answer is None:
-        body_text = UNKNOWN_REVIEWED_SET_MESSAGE
-        parsed_basis_citations = []
-
-    context_gap_id = safe_text(context_ticket.get("gap_ticket_id")) if isinstance(context_ticket, dict) else ""
-    context_gap_id = context_gap_id.strip()
-    if context_gap_id == "GT-DEMO-GAP-010":
-        body_text = GAP010_REVIEW_NOTICE
-
-    evidence_results = [item for item in (analysis_response.get("evidence_results") or []) if isinstance(item, dict)]
-    evidence_refs = _build_evidence_refs(context_ticket, evidence_results)
-    workbook_refs = _build_workbook_refs(context_ticket)
-
-    if isinstance(context_ticket, dict):
-        regulatory_citations = _build_ticket_citations(context_ticket)
+    parsed_body, parsed_citations = parse_basis_clause(answer_text)
+    if provider == "prepared_fallback" and prepared_used:
+        conclusion = _display_text(parsed_body or answer_text)
+        regulatory_basis = parsed_citations or _gap_citation_lines(ticket)
     else:
-        regulatory_citations = _build_basis_citations_for_unscoped_answer(parsed_basis_citations)
+        conclusion = answer_text
+        regulatory_basis = []
 
-    issue_text = ""
-    if isinstance(context_ticket, dict):
-        issue = context_ticket.get("issue") if isinstance(context_ticket.get("issue"), dict) else {}
-        issue_text = safe_text(issue.get("observed_condition")).strip()
+    sources = _normalize_sources(result.get("sources") if isinstance(result.get("sources"), list) else [])
+    if provider == "sustentra_rag" and sources:
+        for source in sources:
+            authority = _display_text(source.get("authority"))
+            citation = _display_text(source.get("citation"))
+            if authority != NOT_AVAILABLE_IN_CONTEXT and citation != NOT_AVAILABLE_IN_CONTEXT:
+                regulatory_basis.append(f"{authority} {citation}")
+            elif citation != NOT_AVAILABLE_IN_CONTEXT:
+                regulatory_basis.append(citation)
 
-    audit_context_lines = build_audit_context_lines(audit_setup, analysis_response)
-
-    next_actions: list[dict] = []
-    if evidence_refs:
-        next_actions.append(
-            {
-                "action": "open_source_evidence",
-                "label": "Open source evidence",
-                "evidence_id": evidence_refs[0].get("evidence_id"),
-            }
-        )
-    if regulatory_citations:
-        next_actions.append(
-            {
-                "action": "view_regulation_context",
-                "label": "View regulation context",
-                "citation_index": 0,
-            }
-        )
-    if not next_actions and isinstance(context_ticket, dict):
-        next_actions.append(
-            {
-                "action": "back_to_finding",
-                "label": "Back to finding",
-                "gap_ticket_id": context_gap_id,
-            }
-        )
-    next_actions = next_actions[:2]
+    if not regulatory_basis:
+        regulatory_basis = _gap_citation_lines(ticket)
 
     return {
-        "question": question,
-        "direct_answer": body_text,
-        "issue": issue_text,
-        "evidence_refs": evidence_refs,
-        "workbook_refs": workbook_refs,
-        "audit_context_lines": audit_context_lines,
-        "regulatory_citations": regulatory_citations,
-        "next_actions": next_actions,
-        "context_gap_ticket_id": context_gap_id or None,
+        "conclusion": conclusion,
+        "evidence_context": _context_evidence_lines(ticket, assistant_context),
+        "regulatory_basis": regulatory_basis,
+        "next_step": _next_step(ticket, provider),
+        "sources": sources,
     }
 
 
-def _render_structured_assistant_message(structured: dict, key_prefix: str) -> None:
-    st.markdown("**Answer**")
-    with st.container(border=True):
-        st.markdown(safe_text(structured.get("direct_answer")))
-        issue_text = safe_text(structured.get("issue")).strip()
-        if issue_text:
-            st.caption(f"Finding context: {issue_text}")
+def _render_assistant_message(metadata: dict, fallback_content: str, key_prefix: str) -> None:
+    provider_label = _display_text(metadata.get("provider_label"))
+    st.caption(provider_label)
 
-    evidence_refs = structured.get("evidence_refs") if isinstance(structured.get("evidence_refs"), list) else []
-    workbook_refs = structured.get("workbook_refs") if isinstance(structured.get("workbook_refs"), list) else []
-    if evidence_refs or workbook_refs:
-        st.markdown("**Evidence trace**")
-        with st.container(border=True):
-            for index, item in enumerate(evidence_refs):
-                if not isinstance(item, dict):
-                    continue
-                title = safe_text(item.get("title")).strip() or "Evidence"
-                page_number = item.get("page_number")
-                snippet = safe_text(item.get("snippet")).strip()
-                relationship = safe_text(item.get("relationship")).strip()
-                evidence_id = safe_text(item.get("evidence_id")).strip()
+    if _citation_requires_review(metadata.get("citation_validation")):
+        st.warning("Citation validation indicates this answer requires source review.")
 
-                row_col_left, row_col_right = st.columns([5, 2])
-                with row_col_left:
-                    st.markdown(f"**{title}**")
-                    detail_bits = []
-                    if relationship:
-                        detail_bits.append(relationship)
-                    if page_number is not None:
-                        detail_bits.append(f"Page {page_number}")
-                    if detail_bits:
-                        st.caption(" | ".join(detail_bits))
-                    if snippet:
-                        st.caption(snippet)
-                with row_col_right:
-                    if evidence_id:
-                        st.button(
-                            "Open source evidence",
-                            key=f"{key_prefix}_open_source_evidence_{index}",
-                            use_container_width=True,
-                            on_click=open_original_evidence,
-                            args=(evidence_id,),
-                        )
+    sections = metadata.get("sections") if isinstance(metadata.get("sections"), dict) else {}
+    conclusion = _display_text(sections.get("conclusion") or fallback_content)
+    st.markdown("**Conclusion**")
+    st.markdown(conclusion)
 
-            if workbook_refs:
-                st.caption("Workbook references: " + ", ".join(workbook_refs))
+    evidence_context = sections.get("evidence_context") if isinstance(sections.get("evidence_context"), list) else []
+    st.markdown("**Evidence and audit context**")
+    if evidence_context:
+        for line in evidence_context:
+            st.markdown(f"- {_display_text(line)}")
+    else:
+        st.markdown(f"- {NOT_AVAILABLE_IN_CONTEXT}")
 
-    audit_context_lines = (
-        structured.get("audit_context_lines") if isinstance(structured.get("audit_context_lines"), list) else []
-    )
-    if audit_context_lines:
-        st.markdown("**Audit context**")
-        with st.container(border=True):
-            for line in audit_context_lines:
-                if isinstance(line, str) and line.strip():
-                    st.markdown(line)
+    regulatory_basis = sections.get("regulatory_basis") if isinstance(sections.get("regulatory_basis"), list) else []
+    st.markdown("**Regulatory basis**")
+    if regulatory_basis:
+        for line in regulatory_basis:
+            st.markdown(f"- {_display_text(line)}")
+    else:
+        st.markdown(f"- {NOT_AVAILABLE_IN_CONTEXT}")
 
-    regulatory_citations = (
-        structured.get("regulatory_citations")
-        if isinstance(structured.get("regulatory_citations"), list)
-        else []
-    )
-    if regulatory_citations:
-        st.markdown("**Regulatory basis**")
-        _render_citation_rows(regulatory_citations, key_prefix=key_prefix)
+    st.markdown("**Recommended next step**")
+    st.markdown(_display_text(sections.get("next_step")))
 
-    next_actions = structured.get("next_actions") if isinstance(structured.get("next_actions"), list) else []
-    if next_actions:
-        st.markdown("**Next action**")
-        with st.container(border=True):
-            for action_index, action in enumerate(next_actions):
-                if not isinstance(action, dict):
-                    continue
-                action_type = safe_text(action.get("action")).strip()
-                label = safe_text(action.get("label")).strip()
-                if not action_type or not label:
-                    continue
+    sources = sections.get("sources") if isinstance(sections.get("sources"), list) else []
+    if sources:
+        st.markdown("**Sources**")
+        for index, source in enumerate(sources, start=1):
+            if not isinstance(source, dict):
+                continue
+            source_title = _display_text(source.get("title"))
+            with st.expander(f"Source {index}: {source_title}", expanded=False):
+                st.write(f"Authority: {_display_text(source.get('authority'))}")
+                st.write(f"Section/citation: {_display_text(source.get('citation'))}")
+                excerpt = _display_text(source.get("excerpt"))
+                if excerpt != NOT_AVAILABLE_IN_CONTEXT:
+                    st.caption(excerpt)
+                url = safe_text(source.get("url")).strip()
+                if url:
+                    st.link_button("Open source link", url, use_container_width=False)
 
-                if action_type == "open_source_evidence":
-                    evidence_id = safe_text(action.get("evidence_id")).strip()
-                    if evidence_id:
-                        st.button(
-                            label,
-                            key=f"{key_prefix}_next_open_evidence_{action_index}",
-                            use_container_width=True,
-                            on_click=open_original_evidence,
-                            args=(evidence_id,),
-                        )
-                elif action_type == "view_regulation_context":
-                    citation_index = int(action.get("citation_index") or 0)
-                    citations = (
-                        structured.get("regulatory_citations")
-                        if isinstance(structured.get("regulatory_citations"), list)
-                        else []
-                    )
-                    if 0 <= citation_index < len(citations):
-                        citation = citations[citation_index]
-                        if isinstance(citation, dict) and st.button(
-                            label,
-                            key=f"{key_prefix}_next_view_regulation_{action_index}",
-                            use_container_width=True,
-                        ):
-                            _set_regulation_context(citation)
-                elif action_type == "back_to_finding":
-                    gap_ticket_id = safe_text(action.get("gap_ticket_id")).strip()
-                    if gap_ticket_id and st.button(
-                        label,
-                        key=f"{key_prefix}_next_back_to_finding_{action_index}",
-                        use_container_width=True,
-                    ):
-                        set_selected_gap_ticket_id(gap_ticket_id)
-                        switch_page = getattr(st, "switch_page", None)
-                        if callable(switch_page):
-                            switch_page("pages/6_Gap_Analysis.py")
-                        else:
-                            st.info("Open Gap Analysis from the sidebar.")
-
-
-def _ordered_question_list(chat_suggestions: list[dict]) -> list[str]:
-    suggestions = [
-        safe_text(item.get("question")).strip()
-        for item in chat_suggestions
-        if isinstance(item, dict) and safe_text(item.get("question")).strip()
-    ]
-    visible: list[str] = []
-
-    for preferred in PREFERRED_VISIBLE_QUESTIONS:
-        if preferred in suggestions and preferred not in visible:
-            visible.append(preferred)
-
-    for question in suggestions:
-        if question not in visible and len(visible) < 3:
-            visible.append(question)
-
-    remaining = [question for question in suggestions if question not in visible]
-    return visible + remaining
+    error_code = safe_text(metadata.get("error_code")).strip()
+    error_message = safe_text(metadata.get("error_message")).strip()
+    if error_code and error_message:
+        st.caption(f"Diagnostic: {error_code} ({error_message})")
 
 
 init_session_state()
+
 st.title("Sustentra AI Assistant")
-st.caption("Sustentra AI Assistant supports regulatory research and audit documentation. It does not provide legal advice.")
+st.caption(
+    "Ask source-backed questions about the current audit evidence, validation checks, calculations, findings, and NY Part 253 context."
+)
+st.info("This assistant supports audit research and does not provide legal advice.")
 
 analysis_response = get_analysis_response()
 if not analysis_response:
     st.info("No analysis is loaded. Open Evidence Intake and run the workflow to continue.")
     st.stop()
 
+audit_setup = get_audit_setup()
 gap_tickets = [item for item in (analysis_response.get("gap_tickets") or []) if isinstance(item, dict)]
 chat_suggestions = [item for item in (analysis_response.get("chat_suggestions") or []) if isinstance(item, dict)]
+prepared_answers = build_prepared_answers(chat_suggestions)
 
-context_ticket_id = get_chat_context_gap_ticket_id()
-context_ticket = _find_ticket(gap_tickets, context_ticket_id)
-if context_ticket_id and context_ticket is None:
+current_mode = current_chat_mode()
+rag_configured = rag_client.has_rag_configuration()
+health_snapshot = {"ok": False, "category": "skipped", "message": "Health check skipped."}
+if current_mode != "prepared" and rag_configured:
+    health_snapshot = _cached_health_snapshot(f"{current_mode}:configured")
+
+current_gap_id = get_chat_context_gap_ticket_id()
+current_ticket = _find_ticket(gap_tickets, current_gap_id)
+if current_gap_id and current_ticket is None:
+    set_chat_context_gap_ticket_id(None)
+    current_gap_id = None
+
+if gap_tickets:
+    labels = ["(none)"]
+    label_to_id = {"(none)": None}
+    for ticket in gap_tickets:
+        gap_id = safe_text(ticket.get("gap_ticket_id")).strip()
+        if not gap_id:
+            continue
+        label = f"{_ticket_title(ticket)} ({gap_id})"
+        labels.append(label)
+        label_to_id[label] = gap_id
+
+    selected_label = "(none)"
+    if current_gap_id:
+        for label, gap_id in label_to_id.items():
+            if gap_id == current_gap_id:
+                selected_label = label
+                break
+
+    selected_label = st.selectbox("Selected finding context", options=labels, index=labels.index(selected_label))
+    selected_gap_id = label_to_id.get(selected_label)
+    if selected_gap_id != current_gap_id:
+        set_chat_context_gap_ticket_id(selected_gap_id)
+        current_gap_id = selected_gap_id
+
+context_ticket = _find_ticket(gap_tickets, current_gap_id)
+
+chat_history = get_chat_history()
+latest_assistant_metadata: dict[str, Any] = {}
+for item in reversed(chat_history):
+    if not isinstance(item, dict):
+        continue
+    if safe_text(item.get("role")).strip() != "assistant":
+        continue
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    if metadata:
+        latest_assistant_metadata = metadata
+        break
+
+latest_provider = safe_text(latest_assistant_metadata.get("provider")).strip()
+if latest_provider == "sustentra_rag" or (current_mode != "prepared" and rag_configured and health_snapshot.get("ok")):
+    assistant_status = "Live source-backed service"
+else:
+    assistant_status = "Prepared fallback"
+
+facility_name = _display_text(
+    (audit_setup.get("company_and_facility_profile") or {}).get("facility_name")
+    if isinstance(audit_setup.get("company_and_facility_profile"), dict)
+    else None
+)
+reporting_period = _display_text(
+    (audit_setup.get("company_and_facility_profile") or {}).get("reporting_period")
+    if isinstance(audit_setup.get("company_and_facility_profile"), dict)
+    else None
+)
+
+selected_evidence_id = get_selected_evidence_id()
+selected_validation_id = get_selected_validation_id()
+selected_calculation_id = get_selected_calculation_id()
+selected_workbook_location = get_selected_workbook_location()
+
+with st.container(border=True):
+    st.markdown("### Context summary")
+    st.markdown(f"- Facility: {facility_name}")
+    st.markdown(f"- Reporting period: {reporting_period}")
+    if isinstance(context_ticket, dict):
+        st.markdown(
+            f"- Selected finding: {_ticket_title(context_ticket)} ({_display_text(context_ticket.get('gap_ticket_id'))})"
+        )
+    else:
+        st.markdown(f"- Selected finding: {NOT_AVAILABLE_IN_CONTEXT}")
+    st.markdown(f"- Selected evidence context: {_display_text(selected_evidence_id)}")
+    st.markdown(f"- Selected calculation context: {_display_text(selected_calculation_id)}")
+    if isinstance(selected_workbook_location, dict):
+        sheet = safe_text(selected_workbook_location.get("sheet_name")).strip()
+        cell = safe_text(selected_workbook_location.get("cell_or_range")).strip()
+        workbook_label = f"{sheet}!{cell}" if sheet and cell else NOT_AVAILABLE_IN_CONTEXT
+    else:
+        workbook_label = NOT_AVAILABLE_IN_CONTEXT
+    st.markdown(f"- Selected workbook context: {workbook_label}")
+    st.markdown(f"- Assistant status: {assistant_status}")
+
+control_col1, control_col2, control_col3 = st.columns(3)
+if control_col1.button("Clear conversation", use_container_width=True):
+    clear_chat_history()
+if control_col2.button("Retry last question using live service", use_container_width=True):
+    last_question = _last_user_question(chat_history)
+    if last_question:
+        _queue_question(last_question, force_real=True)
+    else:
+        st.info("No previous user question is available to retry.")
+if control_col3.button("Remove current gap context", use_container_width=True):
     set_chat_context_gap_ticket_id(None)
 
 if isinstance(context_ticket, dict):
-    context_gap_id = safe_text(context_ticket.get("gap_ticket_id")).strip()
-    context_title = safe_text(context_ticket.get("title")).strip() or "Finding"
-    context_issue = context_ticket.get("issue") if isinstance(context_ticket.get("issue"), dict) else {}
-    context_issue_text = safe_text(context_issue.get("observed_condition")).strip()
+    context_gap_id = _display_text(context_ticket.get("gap_ticket_id"))
+    context_title = _ticket_title(context_ticket)
 
-    context_evidence_refs = _build_evidence_refs(
-        context_ticket,
-        [item for item in (analysis_response.get("evidence_results") or []) if isinstance(item, dict)],
-    )
-    context_citations = _build_ticket_citations(context_ticket)
+    st.markdown("### Context actions")
+    primary_col1, primary_col2, primary_col3 = st.columns(3)
+    if primary_col1.button("Explain this finding", use_container_width=True):
+        _queue_question(f"Explain this finding in auditor terms: {context_gap_id} - {context_title}.")
+    if primary_col2.button("Show evidence and workbook trace", use_container_width=True):
+        _queue_question(f"Show the evidence and workbook trace for {context_gap_id}.")
+    if primary_col3.button("Explain the regulatory basis", use_container_width=True):
+        _queue_question(f"Explain the regulatory basis for finding {context_gap_id}.")
 
-    st.markdown("### Context finding")
-    with st.container(border=True):
-        st.markdown(f"**{context_title}**")
-        if context_issue_text:
-            st.caption(context_issue_text)
+    with st.expander("Secondary actions", expanded=False):
+        if st.button("Draft client clarification request", use_container_width=True):
+            _queue_question(f"Draft a client clarification request for {context_gap_id}.")
+        if st.button("Draft auditor note", use_container_width=True):
+            _queue_question(f"Draft an auditor note for {context_gap_id}.")
 
-        control_labels: list[tuple[str, str]] = []
-        if context_evidence_refs:
-            control_labels.append(("open_evidence", "Open source evidence"))
-        if context_citations:
-            control_labels.append(("view_regulation", "View regulation context"))
-        if context_gap_id:
-            control_labels.append(("back_to_finding", "Back to finding"))
-
-        if control_labels:
-            controls = st.columns(len(control_labels))
-            for idx, (action_key, label) in enumerate(control_labels):
-                if action_key == "open_evidence":
-                    first_id = safe_text(context_evidence_refs[0].get("evidence_id")).strip()
-                    controls[idx].button(
-                        label,
-                        key="context_open_source_evidence",
-                        use_container_width=True,
-                        on_click=open_original_evidence,
-                        args=(first_id,),
-                    )
-                elif action_key == "view_regulation":
-                    if controls[idx].button(
-                        label,
-                        key="context_view_regulation",
-                        use_container_width=True,
-                    ):
-                        _set_regulation_context(context_citations[0])
-                elif action_key == "back_to_finding":
-                    if controls[idx].button(
-                        label,
-                        key="context_back_to_finding",
-                        use_container_width=True,
-                    ):
-                        set_selected_gap_ticket_id(context_gap_id)
-                        switch_page = getattr(st, "switch_page", None)
-                        if callable(switch_page):
-                            switch_page("pages/6_Gap_Analysis.py")
-                        else:
-                            st.info("Open Gap Analysis from the sidebar.")
-
-ordered_questions = _ordered_question_list(chat_suggestions)
-visible_questions = ordered_questions[:3]
-more_questions = ordered_questions[3:]
-
-queued_question: str | None = None
+suggested_questions = _visible_suggestions(chat_suggestions)
+visible_questions = suggested_questions[:3]
+more_questions = suggested_questions[3:]
 
 if visible_questions:
-    st.markdown("### Reviewed questions")
-    for index, question in enumerate(visible_questions):
-        if st.button(question, key=f"visible_reviewed_question_{index}", use_container_width=True):
-            queued_question = question
+    st.markdown("### Suggested questions")
+    for idx, question in enumerate(visible_questions):
+        if st.button(question, key=f"suggested_question_{idx}", use_container_width=True):
+            _queue_question(question)
 
 if more_questions:
-    with st.expander("More reviewed questions", expanded=False):
-        for index, question in enumerate(more_questions):
-            if st.button(question, key=f"more_reviewed_question_{index}", use_container_width=True):
-                queued_question = question
-
-selected_chat_question = st.session_state.pop("selected_chat_question", None)
-if queued_question is None and isinstance(selected_chat_question, str) and selected_chat_question.strip():
-    queued_question = selected_chat_question.strip()
+    with st.expander("More suggested questions", expanded=False):
+        for idx, question in enumerate(more_questions):
+            if st.button(question, key=f"more_suggested_question_{idx}", use_container_width=True):
+                _queue_question(question)
 
 history = get_chat_history()
 for idx, message in enumerate(history):
-    role = safe_text(message.get("role")).strip() or "assistant"
-    content = safe_text(message.get("content"))
-    metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+    role = _display_text(message.get("role") if isinstance(message, dict) else "assistant")
+    content = _display_text(message.get("content") if isinstance(message, dict) else "")
+    metadata = message.get("metadata") if isinstance(message, dict) and isinstance(message.get("metadata"), dict) else {}
 
-    with st.chat_message(role):
+    with st.chat_message(role if role in {"user", "assistant", "system"} else "assistant"):
         if role != "assistant":
             st.markdown(content)
             continue
+        _render_assistant_message(metadata, content, key_prefix=f"history_{idx}")
 
-        structured = metadata.get("structured_response") if isinstance(metadata.get("structured_response"), dict) else None
-        if isinstance(structured, dict):
-            _render_structured_assistant_message(structured, key_prefix=f"history_{idx}")
-        else:
-            st.markdown(content)
+queued_question, force_real_retry = _pop_queued_question()
+user_input = st.chat_input("Ask a source-backed audit question")
 
-user_input = st.chat_input("Ask a question from the verified regulatory set")
-question = queued_question or user_input
+question_to_ask = None
+if isinstance(user_input, str) and user_input.strip():
+    question_to_ask = user_input.strip()
+elif queued_question:
+    question_to_ask = queued_question
 
-if isinstance(question, str) and question.strip():
-    final_question = question.strip()
-    append_chat_message("user", final_question)
+if question_to_ask:
+    append_chat_message("user", question_to_ask)
     with st.chat_message("user"):
-        st.markdown(final_question)
+        st.markdown(question_to_ask)
 
-    structured_response = _build_structured_response(
-        question=final_question,
-        chat_suggestions=chat_suggestions,
-        context_ticket=context_ticket,
+    context_payload = build_assistant_context(
         analysis_response=analysis_response,
-        audit_setup=get_audit_setup(),
+        audit_setup=audit_setup,
+        selected_gap_ticket_id=current_gap_id,
+        reviewed_extraction_fields=st.session_state.get("reviewed_extraction_fields", {}),
+        created_gap_ticket_ids=[],
+        gap_ticket_overrides=st.session_state.get("mock_auditor_actions", {}),
+        active_selection={
+            "selected_evidence_id": selected_evidence_id,
+            "selected_validation_id": selected_validation_id,
+            "selected_calculation_id": selected_calculation_id,
+            "selected_workbook_location": selected_workbook_location,
+        },
     )
 
-    append_chat_message(
-        "assistant",
-        safe_text(structured_response.get("direct_answer")),
-        metadata={"structured_response": structured_response},
+    mode_for_request = "real" if force_real_retry else current_mode
+    result = answer_assistant_question(
+        question=question_to_ask,
+        context=context_payload,
+        prepared_answers=prepared_answers,
+        mode=mode_for_request,
     )
+    sections = _build_sections(result, context_ticket, context_payload)
+
+    metadata = {
+        "provider": result.get("provider"),
+        "provider_label": result.get("provider_label"),
+        "mode_used": result.get("mode_used"),
+        "live_attempted": bool(result.get("live_attempted")),
+        "fallback_used": bool(result.get("fallback_used")),
+        "prepared_answer_used": bool(result.get("prepared_answer_used")),
+        "error_code": result.get("error_code"),
+        "error_message": _sanitize_diag_text(result.get("error_message")),
+        "citation_validation": result.get("citation_validation"),
+        "sources": result.get("sources") if isinstance(result.get("sources"), list) else [],
+        "context_size_chars": (context_payload.get("included_counts") or {}).get("context_size_chars"),
+        "context_truncated": bool(context_payload.get("truncated")),
+        "sections": sections,
+    }
+
+    assistant_text = _display_text(result.get("answer"))
+    append_chat_message("assistant", assistant_text, metadata=metadata)
     with st.chat_message("assistant"):
-        _render_structured_assistant_message(structured_response, key_prefix="latest")
+        _render_assistant_message(metadata, assistant_text, key_prefix="latest")
 
-if gap_tickets:
-    gap_ids = [safe_text(item.get("gap_ticket_id")).strip() for item in gap_tickets if safe_text(item.get("gap_ticket_id")).strip()]
-    if gap_ids:
-        selected_context_id = st.selectbox(
-            "Context finding",
-            options=["(none)"] + gap_ids,
-            index=(gap_ids.index(context_ticket_id) + 1) if context_ticket_id in gap_ids else 0,
-        )
-        set_chat_context_gap_ticket_id(None if selected_context_id == "(none)" else selected_context_id)
+latest_history = get_chat_history()
+latest_assistant_meta: dict[str, Any] = {}
+for item in reversed(latest_history):
+    if not isinstance(item, dict):
+        continue
+    if safe_text(item.get("role")).strip() != "assistant":
+        continue
+    maybe_metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    if maybe_metadata:
+        latest_assistant_meta = maybe_metadata
+        break
 
-_render_regulation_context_panel(context_ticket)
+with st.expander("Assistant diagnostics", expanded=False):
+    st.write(f"Configured: {'yes' if rag_configured else 'no'}")
+    st.write(f"Selected mode: {current_mode}")
+    st.write(f"Last provider: {_display_text(latest_assistant_meta.get('provider_label'))}")
+    st.write(f"Last status category: {_display_text(latest_assistant_meta.get('error_code'))}")
+    st.write(f"Context size: {_display_text(latest_assistant_meta.get('context_size_chars'))}")
+    st.write(f"Context truncated: {'yes' if latest_assistant_meta.get('context_truncated') else 'no'}")
+    sources_count = len(latest_assistant_meta.get("sources") or []) if isinstance(latest_assistant_meta.get("sources"), list) else 0
+    st.write(f"Returned sources: {sources_count}")
+    st.write(f"Health status: {_display_text(health_snapshot.get('category'))}")
+    st.write(f"Health detail: {_display_text(health_snapshot.get('message'))}")

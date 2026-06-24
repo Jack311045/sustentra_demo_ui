@@ -72,7 +72,9 @@ def _get_rag_base_url() -> str:
 
 def get_auditor_chat_mode() -> str:
     mode = _resolve_config_value("AUDITOR_CHAT_MODE").strip().lower()
-    if mode in {"auto", "real", "mock"}:
+    if mode == "mock":
+        return "prepared"
+    if mode in {"auto", "real", "prepared"}:
         return mode
     return "auto"
 
