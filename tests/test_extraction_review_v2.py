@@ -393,6 +393,16 @@ def test_left_rail_is_selector_only_no_bulk_copy() -> None:
     assert "I have reviewed these {label.lower()} fields" not in source
 
 
+def test_page_has_uploaded_evidence_overview_and_no_raw_id_caption_metadata() -> None:
+    source = _page_source()
+    assert "def _page_count" in source
+    assert "def _humanize_id" in source
+    assert "def _build_evidence_overview_rows" in source
+    assert 'with st.expander("Uploaded evidence"' in source
+    assert "st.dataframe(overview_rows" in source
+    assert "meta_bits = [evidence_id]" not in source
+
+
 def _run_page3_apptest() -> AppTest:
     response = _read_json(GAP_PATH)
     at = AppTest.from_file(str(PAGE_3), default_timeout=30)

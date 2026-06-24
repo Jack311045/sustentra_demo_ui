@@ -73,6 +73,11 @@ def test_gap_page_source_uses_master_detail_contract() -> None:
     assert "render_gap_card" not in source
     assert "st.json(" not in source
     assert "Needs confirmation" not in source
+    assert "_open_regulation_dialog_event" in source
+    assert "gap_regulation_dialog_ticket_id" not in source
+    assert "_render_regulation_dialog" not in source
+    assert "_render_selected_finding_summary_cards" in source
+    assert ".metric(" not in source
 
 
 def test_gap_page_defaults_to_created_view_when_created_findings_exist() -> None:

@@ -105,6 +105,9 @@ def test_page7_source_contract_includes_live_orchestration() -> None:
     assert "Retry last question using live service" in source
     assert "Assistant diagnostics" in source
     assert "does not provide legal advice" in source.lower()
+    assert "_LEADING_ANSWER_HEADING_RE" in source
+    assert "_strip_redundant_leading_heading" in source
+    assert 'st.markdown("**Conclusion**")' not in source
 
 
 def test_navigation_and_labels_use_sustentra_ai_assistant_name() -> None:

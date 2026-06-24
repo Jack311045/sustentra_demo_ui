@@ -34,6 +34,10 @@ from src.ui.state import (
 
 QUESTION_QUEUE_KEY = "selected_chat_question"
 FORCE_REAL_RETRY_KEY = "assistant_force_real_retry"
+_LEADING_ANSWER_HEADING_RE = re.compile(
+    r"^\s*(?:#{1,6}\s*)?(?:\*\*|__)?\s*(?:conclusion|answer|final answer|summary)\s*(?:\*\*|__)?\s*[:\-]?\s*(?:\n+)?",
+    re.IGNORECASE,
+)
 INTERNAL_SUGGESTION_EXCLUSIONS = {
     "Which gaps are most important to show in the demo?",
 }
@@ -115,6 +119,14 @@ def _sanitize_diag_text(value: Any) -> str:
     if len(text) > 220:
         text = text[:217].rstrip() + "..."
     return text
+
+
+def _strip_redundant_leading_heading(value: Any) -> str:
+    text = safe_text(value).strip()
+    if not text:
+        return ""
+    stripped = _LEADING_ANSWER_HEADING_RE.sub("", text, count=1).strip()
+    return stripped or text
 
 
 @st.cache_data(ttl=45, show_spinner=False)
@@ -273,13 +285,13 @@ def _next_step(ticket: dict | None, provider: str) -> str:
 
 
 def _build_sections(result: dict, ticket: dict | None, assistant_context: dict) -> dict:
-    answer_text = _display_text(result.get("answer"))
+    answer_text = _display_text(_strip_redundant_leading_heading(result.get("answer")))
     prepared_used = bool(result.get("prepared_answer_used"))
     provider = safe_text(result.get("provider")).strip()
 
     parsed_body, parsed_citations = parse_basis_clause(answer_text)
     if provider == "prepared_fallback" and prepared_used:
-        conclusion = _display_text(parsed_body or answer_text)
+        conclusion = _display_text(_strip_redundant_leading_heading(parsed_body or answer_text))
         regulatory_basis = parsed_citations or _gap_citation_lines(ticket)
     else:
         conclusion = answer_text
@@ -315,8 +327,9 @@ def _render_assistant_message(metadata: dict, fallback_content: str, key_prefix:
         st.warning("Citation validation indicates this answer requires source review.")
 
     sections = metadata.get("sections") if isinstance(metadata.get("sections"), dict) else {}
-    conclusion = _display_text(sections.get("conclusion") or fallback_content)
-    st.markdown("**Conclusion**")
+    conclusion = _display_text(
+        _strip_redundant_leading_heading(sections.get("conclusion") or fallback_content)
+    )
     st.markdown(conclusion)
 
     evidence_context = sections.get("evidence_context") if isinstance(sections.get("evidence_context"), list) else []

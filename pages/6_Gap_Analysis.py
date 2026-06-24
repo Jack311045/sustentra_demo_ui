@@ -46,8 +46,8 @@ SEVERITY_FILTER_KEY = "gap_filter_severity"
 STATUS_FILTER_KEY = "gap_filter_status"
 CATEGORY_FILTER_KEY = "gap_filter_category"
 ASSERTION_FILTER_KEY = "gap_filter_assertion"
-REGULATION_DIALOG_TICKET_KEY = "gap_regulation_dialog_ticket_id"
-ACTION_FEEDBACK_KEY = "gap_action_feedback"
+ACTION_FEEDBACK_KEY = "gap_action_feedback_by_ticket"
+NOTE_FEEDBACK_KEY = "gap_note_feedback_by_ticket"
 
 
 def _dialog_decorator():
@@ -56,6 +56,23 @@ def _dialog_decorator():
 
 def _note_widget_key(ticket_id: str) -> str:
     return f"gap_note_widget::{ticket_id}"
+
+
+def _set_ticket_feedback(state_key: str, ticket_id: str, message: str) -> None:
+    current = st.session_state.get(state_key)
+    if not isinstance(current, dict):
+        current = {}
+    current[ticket_id] = message
+    st.session_state[state_key] = current
+
+
+def _consume_ticket_feedback(state_key: str, ticket_id: str) -> str:
+    current = st.session_state.get(state_key)
+    if not isinstance(current, dict):
+        return ""
+    message = str(current.pop(ticket_id, "") or "").strip()
+    st.session_state[state_key] = current
+    return message
 
 
 def _fallback_text(value: Any) -> str:
@@ -214,43 +231,38 @@ def _render_regulation_detail_blocks(citations: list[dict], regulation_library: 
                 st.caption(f"Source: {source_url}")
 
 
-def _render_regulation_dialog(
-    selected_view: dict | None,
-    all_views_by_id: dict[str, dict],
+def _open_regulation_dialog_event(
+    ticket_id: str,
+    citations: list[dict],
     regulation_library: dict[str, dict],
 ) -> None:
-    ticket_id = str(st.session_state.get(REGULATION_DIALOG_TICKET_KEY) or "").strip()
-    if not ticket_id:
-        return
-
-    view = all_views_by_id.get(ticket_id)
-    if not isinstance(view, dict):
-        st.session_state[REGULATION_DIALOG_TICKET_KEY] = None
-        return
-
-    ticket = view.get("ticket") if isinstance(view.get("ticket"), dict) else {}
-    citations = _extract_citations(ticket)
-
-    def _dialog_body() -> None:
-        st.caption(f"Regulation details for {ticket_id}")
-        _render_regulation_detail_blocks(citations, regulation_library)
-        if st.button("Close", key=f"close_regulation_dialog_{ticket_id}"):
-            st.session_state[REGULATION_DIALOG_TICKET_KEY] = None
-            st.rerun()
-
     decorator = _dialog_decorator()
     if callable(decorator):
         @decorator(f"Show regulation: {ticket_id}")
-        def _show_regulation() -> None:
-            _dialog_body()
+        def _show_regulation_details() -> None:
+            st.caption(f"Regulation details for {ticket_id}")
+            _render_regulation_detail_blocks(citations, regulation_library)
 
-        _show_regulation()
+        _show_regulation_details()
     else:
-        if selected_view and str(selected_view.get("id") or "") == ticket_id:
+        with st.container(border=True):
+            st.caption(f"Regulation details for {ticket_id}")
+            _render_regulation_detail_blocks(citations, regulation_library)
+
+
+def _render_selected_finding_summary_cards(selected_view: dict) -> None:
+    cards = [
+        ("Status", str(selected_view.get("status") or "Unknown")),
+        ("Category", str(selected_view.get("category") or "General")),
+        ("System severity", str(selected_view.get("system_severity") or "Informational")),
+        ("Auditor severity", str(selected_view.get("auditor_severity") or "Not set")),
+    ]
+    cols = st.columns(4)
+    for col, (label, value) in zip(cols, cards):
+        with col:
             with st.container(border=True):
-                _dialog_body()
-        else:
-            st.session_state[REGULATION_DIALOG_TICKET_KEY] = None
+                st.caption(label)
+                st.markdown(f"**{value}**")
 
 
 def _render_detail(selected_view: dict, regulation_library: dict[str, dict]) -> None:
@@ -266,12 +278,7 @@ def _render_detail(selected_view: dict, regulation_library: dict[str, dict]) -> 
     rule_results = ticket.get("upstream_rule_results") if isinstance(ticket.get("upstream_rule_results"), list) else []
 
     st.markdown(f"### {selected_view.get('title')}")
-
-    summary_cols = st.columns(4)
-    summary_cols[0].metric("Status", str(selected_view.get("status") or "Unknown"))
-    summary_cols[1].metric("Category", str(selected_view.get("category") or "General"))
-    summary_cols[2].metric("System severity", str(selected_view.get("system_severity") or "Informational"))
-    summary_cols[3].metric("Auditor severity", str(selected_view.get("auditor_severity") or "Not set"))
+    _render_selected_finding_summary_cards(selected_view)
 
     action_cols = st.columns(5)
     if action_cols[0].button(
@@ -293,8 +300,7 @@ def _render_detail(selected_view: dict, regulation_library: dict[str, dict]) -> 
         key=f"gap_action_show_regulation_{ticket_id}",
         use_container_width=True,
     ):
-        st.session_state[REGULATION_DIALOG_TICKET_KEY] = ticket_id
-        st.rerun()
+        _open_regulation_dialog_event(ticket_id, citations, regulation_library)
 
     if action_cols[3].button(
         "Ask Sustentra AI Assistant",
@@ -328,25 +334,25 @@ def _render_detail(selected_view: dict, regulation_library: dict[str, dict]) -> 
     decision_cols = st.columns(3)
     if decision_cols[0].button("Confirm", key=f"gap_decision_confirm_{ticket_id}", use_container_width=True):
         update_mock_auditor_action(ticket_id, {"action": "Confirm"})
-        st.session_state[ACTION_FEEDBACK_KEY] = f"Saved Confirm for {ticket_id}."
-        st.rerun()
+        _set_ticket_feedback(ACTION_FEEDBACK_KEY, ticket_id, f"Saved Confirm for {ticket_id}.")
     if decision_cols[1].button("Dismiss", key=f"gap_decision_dismiss_{ticket_id}", use_container_width=True):
         update_mock_auditor_action(ticket_id, {"action": "Dismiss"})
-        st.session_state[ACTION_FEEDBACK_KEY] = f"Saved Dismiss for {ticket_id}."
-        st.rerun()
+        _set_ticket_feedback(ACTION_FEEDBACK_KEY, ticket_id, f"Saved Dismiss for {ticket_id}.")
     if decision_cols[2].button(
         "Request clarification",
         key=f"gap_decision_clarify_{ticket_id}",
         use_container_width=True,
     ):
         update_mock_auditor_action(ticket_id, {"action": "Request clarification"})
-        st.session_state[ACTION_FEEDBACK_KEY] = f"Saved Request clarification for {ticket_id}."
-        st.rerun()
+        _set_ticket_feedback(
+            ACTION_FEEDBACK_KEY,
+            ticket_id,
+            f"Saved Request clarification for {ticket_id}.",
+        )
 
-    feedback = str(st.session_state.get(ACTION_FEEDBACK_KEY) or "").strip()
-    if feedback:
-        st.success(feedback)
-        st.session_state[ACTION_FEEDBACK_KEY] = ""
+    action_feedback = _consume_ticket_feedback(ACTION_FEEDBACK_KEY, ticket_id)
+    if action_feedback:
+        st.success(action_feedback)
 
     current_action = ""
     actions_overlay = st.session_state.get("mock_auditor_actions")
@@ -364,7 +370,11 @@ def _render_detail(selected_view: dict, regulation_library: dict[str, dict]) -> 
     note_value = st.text_area("Add auditor note", key=note_key, height=120)
     if st.button("Save note", key=f"gap_save_note_{ticket_id}"):
         update_mock_auditor_action(ticket_id, {"note": note_value.strip()})
-        st.success(f"Saved note for {ticket_id}.")
+        _set_ticket_feedback(NOTE_FEEDBACK_KEY, ticket_id, f"Saved note for {ticket_id}.")
+
+    note_feedback = _consume_ticket_feedback(NOTE_FEEDBACK_KEY, ticket_id)
+    if note_feedback:
+        st.success(note_feedback)
 
     tab_finding, tab_evidence, tab_workbook, tab_regulatory, tab_reasoning = st.tabs(
         ["Finding", "Evidence Trace", "Workbook Trace", "Regulatory Basis", "AI Reasoning"]
@@ -474,11 +484,6 @@ if selected_id:
     set_selected_gap_ticket_id(selected_id)
 
 selected_view = find_gap_view(filtered_views, selected_id)
-all_views_by_id = {
-    str(view.get("id") or ""): view
-    for view in all_views
-    if isinstance(view, dict) and str(view.get("id") or "").strip()
-}
 regulation_library = load_regulation_library()
 
 master_col, detail_col = st.columns([1.25, 2.75], gap="large")
@@ -493,5 +498,3 @@ with detail_col:
         st.info("Select a finding from the list to review its detail.")
     else:
         _render_detail(selected_view, regulation_library)
-
-_render_regulation_dialog(selected_view, all_views_by_id, regulation_library)

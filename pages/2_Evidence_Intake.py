@@ -10,7 +10,6 @@ from src.api.mock_client import MockApiClient
 from src.ui.components import render_audit_setup_context
 from src.ui.state import (
     get_audit_setup,
-    get_selected_demo_scenario,
     init_session_state,
     is_audit_setup_user_saved,
     set_analysis_response,
@@ -23,10 +22,8 @@ from src.ui.state import (
 from src.ui.workflow import render_prepared_demo_disclosure
 
 
-SCENARIO_OPTIONS = {
-    "gap_path": "Data with gaps",
-    "clean_path": "Clean data path",
-}
+PREPARED_SCENARIO_ID = "gap_path"
+PREPARED_SCENARIO_LABEL = "Data with gaps"
 
 
 init_session_state()
@@ -39,7 +36,7 @@ st.info(
     "The uploaded files establish the demo engagement workflow. The current build uses prepared "
     "extraction, validation, calculation, and gap results until the document-analysis API is connected."
 )
-st.caption("Current session Audit Setup values are preserved when switching prepared scenarios.")
+st.caption("Current session Audit Setup values are preserved when running the prepared workflow.")
 
 workbook_file = st.file_uploader(
     "Upload workbook",
@@ -52,15 +49,7 @@ evidence_files = st.file_uploader(
     accept_multiple_files=True,
 )
 
-selected_scenario = st.selectbox(
-    "Prepared scenario",
-    options=list(SCENARIO_OPTIONS.keys()),
-    format_func=lambda option: SCENARIO_OPTIONS.get(option, option),
-    index=list(SCENARIO_OPTIONS.keys()).index(get_selected_demo_scenario())
-    if get_selected_demo_scenario() in SCENARIO_OPTIONS
-    else 0,
-)
-set_selected_demo_scenario(selected_scenario)
+set_selected_demo_scenario(PREPARED_SCENARIO_ID)
 
 workbook_metadata: dict[str, Any] = {}
 if workbook_file is not None:
@@ -104,14 +93,14 @@ with summary_col2:
 
 if st.button("Run prepared demo workflow", type="primary"):
     client = MockApiClient()
-    raw_response = client.analyze(scenario_id=selected_scenario)
+    raw_response = client.analyze(scenario_id=PREPARED_SCENARIO_ID)
     adapted = adapt_analysis_response(raw_response)
 
     uploaded_files_payload = {
         "workbook": workbook_metadata,
         "evidence_files": uploaded_evidence,
-        "scenario_id": selected_scenario,
-        "scenario_label": SCENARIO_OPTIONS.get(selected_scenario, selected_scenario),
+        "scenario_id": PREPARED_SCENARIO_ID,
+        "scenario_label": PREPARED_SCENARIO_LABEL,
         "note": (
             "Prepared extraction, validation, calculation, and gap results were used for this demo run."
         ),
@@ -132,28 +121,8 @@ if st.button("Run prepared demo workflow", type="primary"):
 
     adapted["uploaded_demo_files"] = uploaded_files_payload
     adapted["audit_setup"] = deepcopy(effective_setup)
-    adapted["selected_demo_scenario"] = selected_scenario
-    adapted.setdefault("warnings", [])
-    if selected_scenario == "clean_path" and adapted.get("scenario_status") == "not_available":
-        adapted["warnings"].append(
-            "Clean data path is not available in the current prepared dataset."
-        )
+    adapted["selected_demo_scenario"] = PREPARED_SCENARIO_ID
 
     set_analysis_response(adapted)
     st.session_state["demo_analysis_loaded_from_uploaded_flow"] = True
     set_prepared_demo_disclosure_acknowledged(True)
-    st.success("Prepared demo workflow loaded into session state.")
-
-analysis_response = st.session_state.get("analysis_response")
-if isinstance(analysis_response, dict):
-    st.subheader("Loaded analysis snapshot")
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Run ID", str(analysis_response.get("run_id") or "N/A"))
-    col2.metric("Status", str(analysis_response.get("status") or "unknown"))
-    col3.metric("Scenario", SCENARIO_OPTIONS.get(selected_scenario, selected_scenario))
-
-    warnings = analysis_response.get("warnings") if isinstance(analysis_response.get("warnings"), list) else []
-    if warnings:
-        with st.expander("Warnings", expanded=False):
-            for warning in warnings:
-                st.write(f"- {warning}")

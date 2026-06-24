@@ -151,6 +151,58 @@ def _unconfirmed_field_count(records: list[dict], reviewed_all: dict) -> int:
     return total
 
 
+def _page_count(record: dict, asset_meta: dict) -> int | None:
+    asset_page_count = asset_meta.get("page_count") if isinstance(asset_meta, dict) else None
+    if isinstance(asset_page_count, int) and asset_page_count > 0:
+        return asset_page_count
+
+    refs = record.get("source_references") if isinstance(record, dict) else []
+    pages = {
+        int(ref.get("page_number"))
+        for ref in refs
+        if isinstance(ref, dict) and isinstance(ref.get("page_number"), int) and int(ref.get("page_number")) > 0
+    }
+    if pages:
+        return len(pages)
+    return None
+
+
+def _humanize_id(value: object) -> str:
+    token = safe_text(value)
+    if not token:
+        return ""
+    normalized = token.replace("_", " ").replace("-", " ").strip()
+    return " ".join(part for part in normalized.split() if part)
+
+
+def _build_evidence_overview_rows(records: list[dict], asset_manifest: dict[str, dict]) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for record in records:
+        evidence_id = safe_text(record.get("evidence_id"))
+        asset_meta = asset_manifest.get(evidence_id, {})
+        display_name = record_display_name(record, asset_meta)
+        fallback_name = _humanize_id(evidence_id) or "Evidence record"
+        if not display_name:
+            display_name = fallback_name
+        elif display_name == evidence_id:
+            display_name = fallback_name
+
+        doc_type = safe_text(record.get("document_type")) or safe_text(asset_meta.get("document_type")) or "Document"
+        period = record_period_label(record) or "n/a"
+        pages = _page_count(record, asset_meta)
+        extracted_fields = record.get("extracted_fields") if isinstance(record.get("extracted_fields"), dict) else {}
+        rows.append(
+            {
+                "Evidence": display_name,
+                "Type": doc_type,
+                "Period": period,
+                "Pages": pages if pages is not None else "n/a",
+                "Fields": len(extracted_fields),
+            }
+        )
+    return rows
+
+
 # --- Callbacks (mutate overlay only; fragment reruns automatically) -----------
 def _cb_select_record(evidence_id: str) -> None:
     set_selected_evidence_id(evidence_id)
@@ -306,6 +358,10 @@ def _render_left_group(
             evidence_id = safe_text(record.get("evidence_id"))
             period = record_period_label(record)
             name = record_display_name(record, asset_manifest.get(evidence_id, {}))
+            if not name:
+                name = _humanize_id(evidence_id) or "Evidence record"
+            elif name == evidence_id:
+                name = _humanize_id(evidence_id) or evidence_id
             row_label = name
             st.button(
                 row_label,
@@ -315,9 +371,12 @@ def _render_left_group(
                 on_click=_cb_select_record,
                 args=(evidence_id,),
             )
-            meta_bits = [evidence_id]
+            field_count = len(record.get("extracted_fields") or {})
+            doc_type = safe_text(record.get("document_type")) or "Document"
+            meta_bits = [doc_type]
             if period:
                 meta_bits.append(period)
+            meta_bits.append(f"{field_count} field{'s' if field_count != 1 else ''}")
             st.caption(" | ".join(meta_bits))
 
 
@@ -423,6 +482,13 @@ def _render_workspace() -> None:
     )
     if progress["total_fields"]:
         st.progress(progress["confirmed_fields"] / progress["total_fields"])
+
+    with st.expander("Uploaded evidence", expanded=False):
+        overview_rows = _build_evidence_overview_rows(reviewable_records, asset_manifest)
+        if overview_rows:
+            st.dataframe(overview_rows, use_container_width=True, hide_index=True)
+        else:
+            st.caption("No uploaded evidence records are available.")
 
     # Record-level confidence badge (shown once).
     selected_bucket = record_confidence_bucket(selected_record)

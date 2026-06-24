@@ -57,11 +57,17 @@ def test_all_pages_compile() -> None:
         py_compile.compile(target, doraise=True)
 
 
-def test_evidence_intake_has_prepared_workflow_button_and_disclosure() -> None:
+def test_evidence_intake_hard_pins_gap_path_and_hides_debug_snapshot_ui() -> None:
     source = Path("pages/2_Evidence_Intake.py").read_text(encoding="utf-8")
 
+    assert 'PREPARED_SCENARIO_ID = "gap_path"' in source
+    assert 'PREPARED_SCENARIO_LABEL = "Data with gaps"' in source
+    assert "set_selected_demo_scenario(PREPARED_SCENARIO_ID)" in source
+    assert "Prepared scenario" not in source
     assert "Run prepared demo workflow" in source
     assert "current build uses prepared" in source.lower()
+    assert "Loaded analysis snapshot" not in source
+    assert "Prepared demo workflow loaded into session state" not in source
 
 
 def test_sustentra_ai_assistant_disclaimer_and_live_fallback_strings() -> None:
