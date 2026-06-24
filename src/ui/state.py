@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
 import streamlit as st
@@ -21,6 +22,9 @@ _DEFAULTS: dict[str, Any] = {
     "selected_validation_id": None,
     "selected_calculation_id": None,
     "selected_gap_ticket_id": None,
+    "created_gap_ticket_ids": [],
+    "gap_ticket_overrides": {},
+    "open_create_modal_for": None,
     "selected_workbook_location": None,
     "focused_source_evidence_id": None,
     "focused_source_field_key": None,
@@ -33,6 +37,21 @@ _DEFAULTS: dict[str, Any] = {
     "demo_analysis_loaded_from_uploaded_flow": False,
     "mock_auditor_actions": {},
 }
+
+
+def _clean_ticket_id(ticket_id: Any) -> str:
+    text = str(ticket_id or "").strip()
+    return text
+
+
+def _merge_dict(base: dict, changes: dict) -> dict:
+    merged = dict(base)
+    for key, value in changes.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_dict(merged.get(key) or {}, value)
+        else:
+            merged[key] = value
+    return merged
 
 
 def init_session_state() -> None:
@@ -318,6 +337,102 @@ def set_selected_gap_ticket_id(ticket_id: str | None) -> None:
 def get_selected_gap_ticket_id() -> str | None:
     value = st.session_state.get("selected_gap_ticket_id")
     return value if isinstance(value, str) and value else None
+
+
+def get_created_gap_ticket_ids() -> list[str]:
+    value = st.session_state.get("created_gap_ticket_ids")
+    if not isinstance(value, list):
+        return []
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        ticket_id = _clean_ticket_id(item)
+        if not ticket_id or ticket_id in seen:
+            continue
+        ordered.append(ticket_id)
+        seen.add(ticket_id)
+
+    return list(ordered)
+
+
+def get_gap_ticket_overrides() -> dict[str, dict]:
+    value = st.session_state.get("gap_ticket_overrides")
+    if not isinstance(value, dict):
+        return {}
+
+    cleaned: dict[str, dict] = {}
+    for raw_key, raw_override in value.items():
+        ticket_id = _clean_ticket_id(raw_key)
+        if not ticket_id or not isinstance(raw_override, dict):
+            continue
+        cleaned[ticket_id] = deepcopy(raw_override)
+    return cleaned
+
+
+def get_gap_ticket_override(ticket_id: str) -> dict:
+    key = _clean_ticket_id(ticket_id)
+    if not key:
+        return {}
+    overrides = get_gap_ticket_overrides()
+    value = overrides.get(key)
+    return deepcopy(value) if isinstance(value, dict) else {}
+
+
+def set_gap_ticket_override(ticket_id: str, changes: dict) -> None:
+    key = _clean_ticket_id(ticket_id)
+    if not key or not isinstance(changes, dict):
+        return
+
+    merged_changes = {str(field): value for field, value in changes.items()}
+    if not merged_changes:
+        return
+
+    overrides = get_gap_ticket_overrides()
+    current = overrides.get(key) if isinstance(overrides.get(key), dict) else {}
+    overrides[key] = _merge_dict(current, merged_changes)
+    st.session_state["gap_ticket_overrides"] = overrides
+
+
+def create_gap_ticket(ticket_id: str, overrides: dict | None = None) -> bool:
+    key = _clean_ticket_id(ticket_id)
+    if not key:
+        return False
+
+    created = get_created_gap_ticket_ids()
+    already_exists = key in created
+    if not already_exists:
+        created.append(key)
+        st.session_state["created_gap_ticket_ids"] = created
+
+    if isinstance(overrides, dict) and overrides:
+        set_gap_ticket_override(key, overrides)
+
+    set_selected_gap_ticket_id(key)
+    return not already_exists
+
+
+def set_open_create_modal_for(ticket_id: str | None) -> None:
+    key = _clean_ticket_id(ticket_id)
+    st.session_state["open_create_modal_for"] = key or None
+
+
+def get_open_create_modal_for() -> str | None:
+    value = st.session_state.get("open_create_modal_for")
+    key = _clean_ticket_id(value)
+    return key if key else None
+
+
+def update_mock_auditor_action(ticket_id: str, changes: dict) -> None:
+    key = _clean_ticket_id(ticket_id)
+    if not key or not isinstance(changes, dict):
+        return
+
+    actions = st.session_state.get("mock_auditor_actions")
+    current_actions = actions if isinstance(actions, dict) else {}
+    existing = current_actions.get(key) if isinstance(current_actions.get(key), dict) else {}
+    current_actions[key] = _merge_dict(existing, changes)
+    st.session_state["mock_auditor_actions"] = current_actions
 
 
 def set_selected_workbook_location(location: dict | None) -> None:

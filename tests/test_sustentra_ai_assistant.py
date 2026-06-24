@@ -13,7 +13,7 @@ from streamlit.testing.v1 import AppTest
 PAGE_7 = Path("pages/7_Sustentra_AI_Assistant.py")
 OLD_PAGE_7 = Path("pages/7_Regulatory_Assistant.py")
 STATE_FILE = Path("src/ui/state.py")
-CARDS_FILE = Path("src/ui/cards.py")
+GAP_PAGE_FILE = Path("pages/6_Gap_Analysis.py")
 APP_FILE = Path("app.py")
 FIXTURE_PATH = Path("data/demo/mock_outputs/mock_analysis_response_gap_path.json")
 
@@ -40,6 +40,8 @@ def _run_page7(
     selected_validation_id: str | None = None,
     selected_calculation_id: str | None = None,
     selected_workbook_location: dict | None = None,
+    created_gap_ticket_ids: list[str] | None = None,
+    gap_ticket_overrides: dict | None = None,
 ) -> AppTest:
     at = AppTest.from_file(str(PAGE_7), default_timeout=45)
     at.session_state["analysis_response"] = deepcopy(response)
@@ -59,6 +61,10 @@ def _run_page7(
         at.session_state["selected_calculation_id"] = selected_calculation_id
     if selected_workbook_location is not None:
         at.session_state["selected_workbook_location"] = selected_workbook_location
+    if created_gap_ticket_ids is not None:
+        at.session_state["created_gap_ticket_ids"] = created_gap_ticket_ids
+    if gap_ticket_overrides is not None:
+        at.session_state["gap_ticket_overrides"] = gap_ticket_overrides
 
     at.run()
     return at
@@ -103,12 +109,12 @@ def test_page7_source_contract_includes_live_orchestration() -> None:
 
 def test_navigation_and_labels_use_sustentra_ai_assistant_name() -> None:
     state_source = STATE_FILE.read_text(encoding="utf-8")
-    cards_source = CARDS_FILE.read_text(encoding="utf-8")
+    gap_source = GAP_PAGE_FILE.read_text(encoding="utf-8")
     app_source = APP_FILE.read_text(encoding="utf-8")
 
     assert "pages/7_Sustentra_AI_Assistant.py" in state_source
     assert "Open Sustentra AI Assistant from the sidebar." in state_source
-    assert "Ask Sustentra AI Assistant" in cards_source
+    assert "Ask Sustentra AI Assistant" in gap_source
     assert "Sustentra AI Assistant" in app_source
 
 
@@ -125,14 +131,14 @@ def test_page7_renders_context_summary_actions_and_diagnostics() -> None:
     assert "Retry last question using live service" in rendered
 
 
-def test_selected_chat_question_is_processed_once_with_structured_metadata() -> None:
+def test_selected_chat_question_from_gap_action_is_processed_once_with_structured_metadata() -> None:
     response = _read_json(FIXTURE_PATH)
-    first_question = str((response.get("chat_suggestions") or [{}])[0].get("question") or "")
+    queued_question = "What regulation text applies to GT-DEMO-GAP-003 and why?"
 
     at = _run_page7(
         response,
         context_gap_ticket_id="GT-DEMO-GAP-003",
-        selected_chat_question=first_question,
+        selected_chat_question=queued_question,
     )
 
     assert len(at.exception) == 0
@@ -141,6 +147,15 @@ def test_selected_chat_question_is_processed_once_with_structured_metadata() -> 
     history = at.session_state["chat_history"] if "chat_history" in at.session_state else []
     assert isinstance(history, list)
     assert len(history) >= 2
+
+    queued_messages = [
+        item
+        for item in history
+        if isinstance(item, dict)
+        and item.get("role") == "user"
+        and item.get("content") == queued_question
+    ]
+    assert len(queued_messages) == 1
 
     assistant_message = history[-1]
     assert assistant_message.get("role") == "assistant"
@@ -159,6 +174,30 @@ def test_selected_chat_question_is_processed_once_with_structured_metadata() -> 
     assert len(at.exception) == 0
     next_history = at.session_state["chat_history"] if "chat_history" in at.session_state else []
     assert len(next_history) == history_len
+
+
+def test_page7_context_uses_created_gap_ticket_ids_and_overrides() -> None:
+    source = PAGE_7.read_text(encoding="utf-8")
+    assert "created_gap_ticket_ids=get_created_gap_ticket_ids()" in source
+    assert "gap_ticket_overrides=get_gap_ticket_overrides()" in source
+
+    response = _read_json(FIXTURE_PATH)
+    created_ids = ["GT-DEMO-GAP-003", "GT-DEMO-GAP-005"]
+    overrides = {
+        "GT-DEMO-GAP-003": {
+            "severity": "critical",
+            "auditor_title": "Auditor override title",
+        }
+    }
+
+    at = _run_page7(
+        response,
+        context_gap_ticket_id="GT-DEMO-GAP-003",
+        created_gap_ticket_ids=created_ids,
+        gap_ticket_overrides=overrides,
+    )
+
+    assert len(at.exception) == 0
 
 
 def test_auto_mode_without_match_returns_controlled_unavailable_message() -> None:

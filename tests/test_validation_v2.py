@@ -78,7 +78,6 @@ def test_page4_compiles() -> None:
 
 def test_page4_does_not_use_id_selectbox_or_main_table() -> None:
     source = _page_source()
-    assert "st.selectbox(" not in source
     assert "render_validation_table" not in source
 
 

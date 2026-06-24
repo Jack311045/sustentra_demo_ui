@@ -3068,6 +3068,7 @@
           "check_id": "workbook_reconciliation",
           "label": "Workbook reconciliation",
           "status": "fail",
+          "linked_gap_ticket_id": "GT-DEMO-GAP-003",
           "observed": "Workbook: 281,000 MMBtu",
           "expected": "Source bill: 28,100 MMBtu",
           "explanation": "Workbook quantity is ten times the linked source-bill quantity."
@@ -3093,6 +3094,7 @@
           "check_id": "factor_alignment",
           "label": "Factor alignment",
           "status": "fail",
+          "linked_gap_ticket_id": "GT-DEMO-GAP-005",
           "observed": "Natural gas factor EPA_HUB_2025_SC_NATURAL_GAS",
           "expected": "Biomass-aligned factor and treatment support",
           "explanation": "Biomass activity is associated with a natural-gas factor."
@@ -3110,6 +3112,7 @@
           "check_id": "sampling_chain",
           "label": "Sampling-chain support",
           "status": "fail",
+          "linked_gap_ticket_id": "GT-DEMO-GAP-006",
           "observed": "Single lab report",
           "expected": "Weekly logs and composite preparation support",
           "explanation": "Biomass monthly composite support is incomplete."
@@ -3127,6 +3130,7 @@
           "check_id": "period_cutoff",
           "label": "Reporting-period check",
           "status": "flag",
+          "linked_gap_ticket_id": "GT-DEMO-GAP-009",
           "observed": "Service period extends into 2024",
           "expected": "Year-specific allocation between 2023 and 2024",
           "explanation": "Cross-year billing evidence needs allocation support."

@@ -1,48 +1,400 @@
 from __future__ import annotations
 
+from typing import Any
+
 import streamlit as st
 
-from src.ui.cards import render_gap_card
 from src.ui.components import render_audit_setup_context
-from src.ui.formatting import assertion_label, category_label, normalize_severity, severity_label, status_label
+from src.ui.gap_analysis import (
+    NOT_AVAILABLE_FALLBACK,
+    VIEW_MODE_ALL,
+    VIEW_MODE_CREATED,
+    apply_gap_filters,
+    build_gap_views,
+    derive_summary_counts,
+    ensure_selected_gap_id,
+    find_gap_view,
+    gap_filter_options,
+    sort_gap_views,
+)
+from src.ui.regulation_library import load_regulation_library, resolve_regulation_display
 from src.ui.state import (
     ask_regulatory_assistant,
     get_audit_setup,
-    draft_auditor_note,
     get_analysis_response,
+    get_created_gap_ticket_ids,
+    get_gap_ticket_overrides,
     get_selected_gap_ticket_id,
     init_session_state,
-    open_applicable_regulation,
     open_original_evidence,
     open_workbook_location,
+    set_selected_gap_ticket_id,
+    update_mock_auditor_action,
 )
-from src.ui.traceability import render_evidence_trace, render_reasoning_trail, render_regulatory_basis
+from src.ui.traceability import (
+    render_ai_reasoning,
+    render_evidence_trace,
+    render_reasoning_trail,
+    render_regulatory_basis,
+    summarize_workbook_trace,
+)
 from src.ui.workflow import render_prepared_demo_disclosure
 
 
-TITLE_MAP = {
-    "GT-DEMO-GAP-002": "Pilot-light emissions may be missing",
-    "GT-DEMO-GAP-003": "October natural-gas usage does not match the source bill",
-    "GT-DEMO-GAP-004": "Different combustion source types were combined",
-    "GT-DEMO-GAP-005": "Biomass activity uses the wrong emission factor",
-    "GT-DEMO-GAP-006": "Biomass sampling support is incomplete",
-    "GT-DEMO-GAP-007": "December estimate lacks approved substitution support",
-    "GT-DEMO-GAP-008": "Annual billing evidence is incomplete",
-    "GT-DEMO-GAP-009": "Cross-year bill was not allocated between reporting years",
-    "GT-DEMO-GAP-010": "Workbook uses the wrong GWP basis",
-}
+VIEW_MODE_KEY = "gap_view_mode"
+SEVERITY_FILTER_KEY = "gap_filter_severity"
+STATUS_FILTER_KEY = "gap_filter_status"
+CATEGORY_FILTER_KEY = "gap_filter_category"
+ASSERTION_FILTER_KEY = "gap_filter_assertion"
+REGULATION_DIALOG_TICKET_KEY = "gap_regulation_dialog_ticket_id"
+ACTION_FEEDBACK_KEY = "gap_action_feedback"
 
-CATEGORY_BY_TICKET = {
-    "GT-DEMO-GAP-002": "Missing evidence",
-    "GT-DEMO-GAP-003": "Data mismatch",
-    "GT-DEMO-GAP-004": "Boundary or aggregation",
-    "GT-DEMO-GAP-005": "Methodology or factor",
-    "GT-DEMO-GAP-006": "Sampling support",
-    "GT-DEMO-GAP-007": "Unsupported estimate",
-    "GT-DEMO-GAP-008": "Missing evidence",
-    "GT-DEMO-GAP-009": "Cutoff or allocation",
-    "GT-DEMO-GAP-010": "GWP or conversion basis",
-}
+
+def _dialog_decorator():
+    return getattr(st, "dialog", None) or getattr(st, "experimental_dialog", None)
+
+
+def _note_widget_key(ticket_id: str) -> str:
+    return f"gap_note_widget::{ticket_id}"
+
+
+def _fallback_text(value: Any) -> str:
+    text = str(value or "").strip()
+    return text if text else NOT_AVAILABLE_FALLBACK
+
+
+def _render_summary_chips(summary_counts: dict[str, int]) -> None:
+    cols = st.columns(6)
+
+    if cols[0].button(f"Total {summary_counts.get('total', 0)}", key="gap_chip_total", use_container_width=True):
+        st.session_state[SEVERITY_FILTER_KEY] = "All"
+        st.rerun()
+    if cols[1].button(
+        f"Critical {summary_counts.get('critical', 0)}",
+        key="gap_chip_critical",
+        use_container_width=True,
+    ):
+        st.session_state[VIEW_MODE_KEY] = VIEW_MODE_ALL
+        st.session_state[SEVERITY_FILTER_KEY] = "Critical"
+        st.rerun()
+    if cols[2].button(f"High {summary_counts.get('high', 0)}", key="gap_chip_high", use_container_width=True):
+        st.session_state[VIEW_MODE_KEY] = VIEW_MODE_ALL
+        st.session_state[SEVERITY_FILTER_KEY] = "High"
+        st.rerun()
+    if cols[3].button(
+        f"Medium {summary_counts.get('medium', 0)}",
+        key="gap_chip_medium",
+        use_container_width=True,
+    ):
+        st.session_state[VIEW_MODE_KEY] = VIEW_MODE_ALL
+        st.session_state[SEVERITY_FILTER_KEY] = "Medium"
+        st.rerun()
+    if cols[4].button(f"Low {summary_counts.get('low', 0)}", key="gap_chip_low", use_container_width=True):
+        st.session_state[VIEW_MODE_KEY] = VIEW_MODE_ALL
+        st.session_state[SEVERITY_FILTER_KEY] = "Low"
+        st.rerun()
+    if cols[5].button(
+        f"Created {summary_counts.get('created', 0)}",
+        key="gap_chip_created",
+        use_container_width=True,
+    ):
+        st.session_state[VIEW_MODE_KEY] = VIEW_MODE_CREATED
+        st.session_state[SEVERITY_FILTER_KEY] = "All"
+        st.rerun()
+
+
+def _sync_filter_state(options: dict[str, list[str]]) -> None:
+    defaults = {
+        SEVERITY_FILTER_KEY: "All",
+        STATUS_FILTER_KEY: "All",
+        CATEGORY_FILTER_KEY: "All",
+        ASSERTION_FILTER_KEY: "All",
+    }
+    key_map = {
+        SEVERITY_FILTER_KEY: options.get("severity", ["All"]),
+        STATUS_FILTER_KEY: options.get("status", ["All"]),
+        CATEGORY_FILTER_KEY: options.get("category", ["All"]),
+        ASSERTION_FILTER_KEY: options.get("audit_objective", ["All"]),
+    }
+
+    for key, available in key_map.items():
+        if key not in st.session_state:
+            st.session_state[key] = defaults[key]
+        if st.session_state.get(key) not in available:
+            st.session_state[key] = defaults[key]
+
+
+def _extract_primary_evidence_id(ticket: dict) -> str | None:
+    linked = ticket.get("linked_evidence") if isinstance(ticket.get("linked_evidence"), list) else []
+    for entry in linked:
+        if not isinstance(entry, dict):
+            continue
+        evidence_id = str(entry.get("evidence_id") or "").strip()
+        if evidence_id:
+            return evidence_id
+    return None
+
+
+def _extract_primary_workbook_location(ticket: dict) -> dict | None:
+    linked = (
+        ticket.get("linked_workbook_locations")
+        if isinstance(ticket.get("linked_workbook_locations"), list)
+        else []
+    )
+    for entry in linked:
+        if isinstance(entry, dict):
+            return entry
+    return None
+
+
+def _extract_citations(ticket: dict) -> list[dict]:
+    basis = ticket.get("basis") if isinstance(ticket.get("basis"), dict) else {}
+    citations = basis.get("regulatory_citations") if isinstance(basis.get("regulatory_citations"), list) else []
+    return [item for item in citations if isinstance(item, dict)]
+
+
+def _render_master_list(gap_views: list[dict], selected_id: str | None) -> None:
+    st.markdown("#### Findings")
+    if not gap_views:
+        st.info("No findings match the current view.")
+        return
+
+    for view in gap_views:
+        ticket_id = str(view.get("id") or "")
+        title = str(view.get("title") or "Untitled finding")
+        row_label = f"{ticket_id} - {title}" if ticket_id else title
+        is_selected = ticket_id == (selected_id or "")
+        button_type = "primary" if is_selected else "secondary"
+
+        if st.button(
+            row_label,
+            key=f"gap_master_select_{ticket_id}",
+            use_container_width=True,
+            type=button_type,
+        ):
+            set_selected_gap_ticket_id(ticket_id)
+            st.rerun()
+
+        tags = [
+            str(view.get("effective_severity") or ""),
+            str(view.get("status") or ""),
+            str(view.get("category") or ""),
+        ]
+        if bool(view.get("created")):
+            tags.append("Created")
+        st.caption(" | ".join([tag for tag in tags if tag]))
+
+
+def _render_regulation_detail_blocks(citations: list[dict], regulation_library: dict[str, dict]) -> None:
+    if not citations:
+        st.caption("No regulatory citation is available for this finding.")
+        return
+
+    for index, citation in enumerate(citations, start=1):
+        display = resolve_regulation_display(
+            citation.get("authority"),
+            citation.get("citation"),
+            applicability_explanation=citation.get("applicability_explanation"),
+            library=regulation_library,
+        )
+
+        authority = _fallback_text(display.get("authority"))
+        citation_code = _fallback_text(display.get("citation"))
+        title = _fallback_text(display.get("title"))
+        body = _fallback_text(display.get("text") or display.get("pending_text"))
+        applicability = _fallback_text(display.get("applicability_explanation"))
+
+        with st.container(border=True):
+            st.markdown(f"**Citation {index}: {authority} {citation_code}**")
+            st.write(f"Title: {title}")
+            st.write(body)
+            st.caption(f"Applicability: {applicability}")
+            source_url = str(display.get("source_url") or "").strip()
+            if source_url:
+                st.caption(f"Source: {source_url}")
+
+
+def _render_regulation_dialog(
+    selected_view: dict | None,
+    all_views_by_id: dict[str, dict],
+    regulation_library: dict[str, dict],
+) -> None:
+    ticket_id = str(st.session_state.get(REGULATION_DIALOG_TICKET_KEY) or "").strip()
+    if not ticket_id:
+        return
+
+    view = all_views_by_id.get(ticket_id)
+    if not isinstance(view, dict):
+        st.session_state[REGULATION_DIALOG_TICKET_KEY] = None
+        return
+
+    ticket = view.get("ticket") if isinstance(view.get("ticket"), dict) else {}
+    citations = _extract_citations(ticket)
+
+    def _dialog_body() -> None:
+        st.caption(f"Regulation details for {ticket_id}")
+        _render_regulation_detail_blocks(citations, regulation_library)
+        if st.button("Close", key=f"close_regulation_dialog_{ticket_id}"):
+            st.session_state[REGULATION_DIALOG_TICKET_KEY] = None
+            st.rerun()
+
+    decorator = _dialog_decorator()
+    if callable(decorator):
+        @decorator(f"Show regulation: {ticket_id}")
+        def _show_regulation() -> None:
+            _dialog_body()
+
+        _show_regulation()
+    else:
+        if selected_view and str(selected_view.get("id") or "") == ticket_id:
+            with st.container(border=True):
+                _dialog_body()
+        else:
+            st.session_state[REGULATION_DIALOG_TICKET_KEY] = None
+
+
+def _render_detail(selected_view: dict, regulation_library: dict[str, dict]) -> None:
+    ticket_id = str(selected_view.get("id") or "")
+    ticket = selected_view.get("ticket") if isinstance(selected_view.get("ticket"), dict) else {}
+    linked_evidence = ticket.get("linked_evidence") if isinstance(ticket.get("linked_evidence"), list) else []
+    linked_workbook = (
+        ticket.get("linked_workbook_locations")
+        if isinstance(ticket.get("linked_workbook_locations"), list)
+        else []
+    )
+    citations = _extract_citations(ticket)
+    rule_results = ticket.get("upstream_rule_results") if isinstance(ticket.get("upstream_rule_results"), list) else []
+
+    st.markdown(f"### {selected_view.get('title')}")
+
+    summary_cols = st.columns(4)
+    summary_cols[0].metric("Status", str(selected_view.get("status") or "Unknown"))
+    summary_cols[1].metric("Category", str(selected_view.get("category") or "General"))
+    summary_cols[2].metric("System severity", str(selected_view.get("system_severity") or "Informational"))
+    summary_cols[3].metric("Auditor severity", str(selected_view.get("auditor_severity") or "Not set"))
+
+    action_cols = st.columns(5)
+    if action_cols[0].button(
+        "Open evidence",
+        key=f"gap_action_open_evidence_{ticket_id}",
+        use_container_width=True,
+    ):
+        open_original_evidence(_extract_primary_evidence_id(ticket))
+
+    if action_cols[1].button(
+        "Open workbook location",
+        key=f"gap_action_open_workbook_{ticket_id}",
+        use_container_width=True,
+    ):
+        open_workbook_location(_extract_primary_workbook_location(ticket))
+
+    if action_cols[2].button(
+        "Show regulation",
+        key=f"gap_action_show_regulation_{ticket_id}",
+        use_container_width=True,
+    ):
+        st.session_state[REGULATION_DIALOG_TICKET_KEY] = ticket_id
+        st.rerun()
+
+    if action_cols[3].button(
+        "Ask Sustentra AI Assistant",
+        key=f"gap_action_ask_assistant_{ticket_id}",
+        use_container_width=True,
+    ):
+        question = f"What regulation text applies to {ticket_id} and why?"
+        st.session_state["selected_chat_question"] = question
+        ask_regulatory_assistant(ticket_id, suggested_prompt=question)
+
+    if action_cols[4].button(
+        "Draft auditor note",
+        key=f"gap_action_draft_note_{ticket_id}",
+        use_container_width=True,
+    ):
+        action_state = (
+            (st.session_state.get("mock_auditor_actions") or {}).get(ticket_id, {}).get("action")
+            if isinstance(st.session_state.get("mock_auditor_actions"), dict)
+            else None
+        )
+        action_text = str(action_state or "Not set")
+        draft = (
+            f"Current status: {selected_view.get('status')}. "
+            f"Auditor action: {action_text}. "
+            f"Finding: {ticket_id} - {selected_view.get('title')}"
+        )
+        update_mock_auditor_action(ticket_id, {"note": draft})
+        st.session_state[_note_widget_key(ticket_id)] = draft
+        st.success(f"Drafted note for {ticket_id}.")
+
+    decision_cols = st.columns(3)
+    if decision_cols[0].button("Confirm", key=f"gap_decision_confirm_{ticket_id}", use_container_width=True):
+        update_mock_auditor_action(ticket_id, {"action": "Confirm"})
+        st.session_state[ACTION_FEEDBACK_KEY] = f"Saved Confirm for {ticket_id}."
+        st.rerun()
+    if decision_cols[1].button("Dismiss", key=f"gap_decision_dismiss_{ticket_id}", use_container_width=True):
+        update_mock_auditor_action(ticket_id, {"action": "Dismiss"})
+        st.session_state[ACTION_FEEDBACK_KEY] = f"Saved Dismiss for {ticket_id}."
+        st.rerun()
+    if decision_cols[2].button(
+        "Request clarification",
+        key=f"gap_decision_clarify_{ticket_id}",
+        use_container_width=True,
+    ):
+        update_mock_auditor_action(ticket_id, {"action": "Request clarification"})
+        st.session_state[ACTION_FEEDBACK_KEY] = f"Saved Request clarification for {ticket_id}."
+        st.rerun()
+
+    feedback = str(st.session_state.get(ACTION_FEEDBACK_KEY) or "").strip()
+    if feedback:
+        st.success(feedback)
+        st.session_state[ACTION_FEEDBACK_KEY] = ""
+
+    current_action = ""
+    actions_overlay = st.session_state.get("mock_auditor_actions")
+    if isinstance(actions_overlay, dict):
+        current_action = str((actions_overlay.get(ticket_id) or {}).get("action") or "").strip()
+    st.caption(f"Current auditor action: {_fallback_text(current_action)}")
+
+    note_key = _note_widget_key(ticket_id)
+    existing_note = ""
+    if isinstance(actions_overlay, dict):
+        existing_note = str((actions_overlay.get(ticket_id) or {}).get("note") or "")
+    if note_key not in st.session_state:
+        st.session_state[note_key] = existing_note
+
+    note_value = st.text_area("Add auditor note", key=note_key, height=120)
+    if st.button("Save note", key=f"gap_save_note_{ticket_id}"):
+        update_mock_auditor_action(ticket_id, {"note": note_value.strip()})
+        st.success(f"Saved note for {ticket_id}.")
+
+    tab_finding, tab_evidence, tab_workbook, tab_regulatory, tab_reasoning = st.tabs(
+        ["Finding", "Evidence Trace", "Workbook Trace", "Regulatory Basis", "AI Reasoning"]
+    )
+
+    with tab_finding:
+        st.write(f"What we found: {_fallback_text(selected_view.get('observed'))}")
+        st.write(f"What should be true: {_fallback_text(selected_view.get('expected'))}")
+        st.write(f"Why this matters: {_fallback_text(selected_view.get('why'))}")
+        st.write(f"Recommended action: {_fallback_text(selected_view.get('action'))}")
+
+    with tab_evidence:
+        render_evidence_trace(linked_evidence)
+
+    with tab_workbook:
+        if not linked_workbook:
+            st.caption("No workbook location is linked to this finding.")
+        for location in linked_workbook:
+            if not isinstance(location, dict):
+                continue
+            st.write(summarize_workbook_trace(location))
+
+    with tab_regulatory:
+        render_regulatory_basis(citations)
+        _render_regulation_detail_blocks(citations, regulation_library)
+
+    with tab_reasoning:
+        render_ai_reasoning(rule_results)
+        with st.expander("Rule reasoning details", expanded=False):
+            render_reasoning_trail(rule_results)
 
 
 init_session_state()
@@ -61,141 +413,85 @@ if not gap_tickets:
     st.info("No gap tickets are available in the prepared dataset.")
     st.stop()
 
-# Gap 1 is excluded from the auditor-facing demo register.
-gap_tickets = [
-    ticket
-    for ticket in gap_tickets
-    if str(ticket.get("gap_ticket_id") or "").strip().upper() != "GT-DEMO-GAP-001"
-]
-
-for ticket in gap_tickets:
-    ticket_id = str(ticket.get("gap_ticket_id") or "")
-    ticket["auditor_title"] = TITLE_MAP.get(ticket_id, ticket.get("title") or "Untitled finding")
-    ticket["auditor_category"] = CATEGORY_BY_TICKET.get(
-        ticket_id,
-        category_label(ticket.get("finding_type")),
-    )
-
-severity_filters = ["All"] + sorted({severity_label(ticket.get("severity")) for ticket in gap_tickets})
-status_filters = ["All"] + sorted({status_label(ticket.get("status")) for ticket in gap_tickets})
-category_filters = ["All"] + sorted({str(ticket.get("auditor_category")) for ticket in gap_tickets})
-audit_objective_filters = ["All"] + sorted({assertion_label(ticket.get("primary_assertion")) for ticket in gap_tickets})
-
-fcol1, fcol2, fcol3, fcol4 = st.columns(4)
-selected_severity = fcol1.selectbox("Severity", options=severity_filters, index=0)
-selected_status = fcol2.selectbox("Status", options=status_filters, index=0)
-selected_category = fcol3.selectbox("Category", options=category_filters, index=0)
-selected_audit_objective = fcol4.selectbox("Audit objective", options=audit_objective_filters, index=0)
-
-filtered_tickets = []
-for ticket in gap_tickets:
-    ticket_severity = severity_label(ticket.get("severity"))
-    ticket_status = status_label(ticket.get("status"))
-    ticket_category = str(ticket.get("auditor_category"))
-    ticket_assertion = assertion_label(ticket.get("primary_assertion"))
-
-    if selected_severity != "All" and ticket_severity != selected_severity:
-        continue
-    if selected_status != "All" and ticket_status != selected_status:
-        continue
-    if selected_category != "All" and ticket_category != selected_category:
-        continue
-    if selected_audit_objective != "All" and ticket_assertion != selected_audit_objective:
-        continue
-
-    filtered_tickets.append(ticket)
-
-if not filtered_tickets:
-    st.info("No gap tickets match this filter set.")
+created_ids = set(get_created_gap_ticket_ids())
+overrides = get_gap_ticket_overrides()
+all_views = sort_gap_views(build_gap_views(gap_tickets, created_ids, overrides))
+if not all_views:
+    st.info("No auditor-facing findings are available in the prepared dataset.")
     st.stop()
 
-st.caption(f"Displaying {len(filtered_tickets)} auditor-facing gap cards.")
+summary_counts = derive_summary_counts(all_views)
+default_view_mode = VIEW_MODE_CREATED if summary_counts.get("created", 0) > 0 else VIEW_MODE_ALL
+if VIEW_MODE_KEY not in st.session_state:
+    st.session_state[VIEW_MODE_KEY] = default_view_mode
+if st.session_state.get(VIEW_MODE_KEY) not in {VIEW_MODE_CREATED, VIEW_MODE_ALL}:
+    st.session_state[VIEW_MODE_KEY] = default_view_mode
 
-selected_gap_ticket_id = get_selected_gap_ticket_id()
+st.markdown("### Finding summary")
+_render_summary_chips(summary_counts)
 
-
-def _ticket_sort_key(ticket: dict) -> tuple[int, str]:
-    ticket_id = str(ticket.get("gap_ticket_id") or "")
-    selected_rank = 0 if selected_gap_ticket_id and ticket_id == selected_gap_ticket_id else 1
-    return (selected_rank, normalize_severity(ticket.get("severity")))
-
-for ticket in sorted(filtered_tickets, key=_ticket_sort_key):
-    ticket_id = str(ticket.get("gap_ticket_id") or "")
-
-    if selected_gap_ticket_id and ticket_id == selected_gap_ticket_id:
-        st.caption("Opened from Calculation & Reconciliation")
-
-    actions = render_gap_card(ticket, key_prefix=ticket_id)
-
-    linked_evidence = ticket.get("linked_evidence") if isinstance(ticket.get("linked_evidence"), list) else []
-    linked_workbook = (
-        ticket.get("linked_workbook_locations")
-        if isinstance(ticket.get("linked_workbook_locations"), list)
-        else []
+if hasattr(st, "segmented_control"):
+    st.segmented_control(
+        "View",
+        options=[VIEW_MODE_CREATED, VIEW_MODE_ALL],
+        key=VIEW_MODE_KEY,
     )
-    basis = ticket.get("basis") if isinstance(ticket.get("basis"), dict) else {}
+else:
+    st.radio(
+        "View",
+        options=[VIEW_MODE_CREATED, VIEW_MODE_ALL],
+        key=VIEW_MODE_KEY,
+        horizontal=True,
+    )
 
-    if actions.get("open_evidence"):
-        selected_evidence = linked_evidence[0].get("evidence_id") if linked_evidence and isinstance(linked_evidence[0], dict) else None
-        open_original_evidence(selected_evidence)
+filter_options = gap_filter_options(all_views)
+_sync_filter_state(filter_options)
 
-    if actions.get("open_workbook"):
-        selected_location = linked_workbook[0] if linked_workbook and isinstance(linked_workbook[0], dict) else None
-        open_workbook_location(selected_location)
+fcol1, fcol2, fcol3, fcol4 = st.columns(4)
+fcol1.selectbox("Severity", options=filter_options["severity"], key=SEVERITY_FILTER_KEY)
+fcol2.selectbox("Status", options=filter_options["status"], key=STATUS_FILTER_KEY)
+fcol3.selectbox("Category", options=filter_options["category"], key=CATEGORY_FILTER_KEY)
+fcol4.selectbox("Audit objective", options=filter_options["audit_objective"], key=ASSERTION_FILTER_KEY)
 
-    if actions.get("show_regulation"):
-        open_applicable_regulation(ticket_id)
+filtered_views = sort_gap_views(
+    apply_gap_filters(
+        all_views,
+        view_mode=str(st.session_state.get(VIEW_MODE_KEY) or VIEW_MODE_ALL),
+        severity_filter=str(st.session_state.get(SEVERITY_FILTER_KEY) or "All"),
+        status_filter=str(st.session_state.get(STATUS_FILTER_KEY) or "All"),
+        category_filter=str(st.session_state.get(CATEGORY_FILTER_KEY) or "All"),
+        audit_objective_filter=str(st.session_state.get(ASSERTION_FILTER_KEY) or "All"),
+    )
+)
 
-    if actions.get("ask_regulatory_assistant"):
-        ask_regulatory_assistant(
-            ticket_id,
-            suggested_prompt=f"Explain why {ticket.get('auditor_title')} matters for this audit.",
-        )
+if not filtered_views:
+    st.info("No findings match the current filter set.")
+    st.stop()
 
-    if actions.get("draft_auditor_note"):
-        draft_auditor_note(ticket_id)
+selected_before = get_selected_gap_ticket_id()
+selected_id = ensure_selected_gap_id(filtered_views, selected_before)
+if selected_id:
+    set_selected_gap_ticket_id(selected_id)
 
-    action_col1, action_col2, action_col3 = st.columns(3)
-    if action_col1.button("Confirm", key=f"confirm_{ticket_id}"):
-        st.session_state.setdefault("mock_auditor_actions", {})
-        st.session_state["mock_auditor_actions"][ticket_id] = {"action": "Confirm"}
-    if action_col2.button("Dismiss", key=f"dismiss_{ticket_id}"):
-        st.session_state.setdefault("mock_auditor_actions", {})
-        st.session_state["mock_auditor_actions"][ticket_id] = {"action": "Dismiss"}
-    if action_col3.button("Request clarification", key=f"clarify_{ticket_id}"):
-        st.session_state.setdefault("mock_auditor_actions", {})
-        st.session_state["mock_auditor_actions"][ticket_id] = {"action": "Request clarification"}
+selected_view = find_gap_view(filtered_views, selected_id)
+all_views_by_id = {
+    str(view.get("id") or ""): view
+    for view in all_views
+    if isinstance(view, dict) and str(view.get("id") or "").strip()
+}
+regulation_library = load_regulation_library()
 
-    note_value = st.text_area("Add auditor note", key=f"note_{ticket_id}", height=80)
-    if st.button("Save note", key=f"save_note_{ticket_id}"):
-        st.session_state.setdefault("mock_auditor_actions", {})
-        current = st.session_state["mock_auditor_actions"].get(ticket_id, {})
-        current["note"] = note_value
-        st.session_state["mock_auditor_actions"][ticket_id] = current
-        st.success(f"Saved note for {ticket_id}.")
+master_col, detail_col = st.columns([1.25, 2.75], gap="large")
+with master_col:
+    _render_master_list(filtered_views, selected_id)
 
-    with st.expander("Details", expanded=False):
-        issue = ticket.get("issue") if isinstance(ticket.get("issue"), dict) else {}
-        st.write(f"**What we found:** {issue.get('observed_condition') or 'Needs confirmation'}")
-        st.write(f"**What should be true:** {issue.get('expected_condition') or 'Needs confirmation'}")
-        st.write(f"**Why this matters:** {issue.get('why_triggered') or 'Needs confirmation'}")
-        remediation = ticket.get("remediation") if isinstance(ticket.get("remediation"), dict) else {}
-        st.write(f"**What's next:** {remediation.get('recommended_action') or 'Needs confirmation'}")
+with detail_col:
+    if selected_before and selected_before == selected_id:
+        st.caption("Opened from upstream workflow context")
 
-    with st.expander("Evidence trail", expanded=False):
-        render_evidence_trace(linked_evidence)
-        if linked_workbook:
-            st.write("Workbook trace")
-            for location in linked_workbook:
-                if not isinstance(location, dict):
-                    continue
-                sheet = location.get("sheet_name") or "Unknown sheet"
-                cell = location.get("cell_or_range") or "Unknown cell"
-                st.caption(f"{sheet}!{cell}")
+    if not isinstance(selected_view, dict):
+        st.info("Select a finding from the list to review its detail.")
+    else:
+        _render_detail(selected_view, regulation_library)
 
-    with st.expander("Regulatory basis", expanded=False):
-        citations = basis.get("regulatory_citations") if isinstance(basis.get("regulatory_citations"), list) else []
-        render_regulatory_basis(citations)
-
-    with st.expander("Reasoning trail", expanded=False):
-        render_reasoning_trail(ticket.get("upstream_rule_results") if isinstance(ticket.get("upstream_rule_results"), list) else [])
+_render_regulation_dialog(selected_view, all_views_by_id, regulation_library)

@@ -198,7 +198,7 @@ def test_run_recalculation_reveals_five_steps_and_keeps_prepared_data_unchanged(
     assert "Step 3 — Per-gas emissions" not in before
     assert "Step 4 — GWP conversion" not in before
     assert "Step 5 — Recalculated result" not in before
-    assert "This variance generated Gap GAP-003." not in before
+    assert "This variance maps to finding GT-DEMO-GAP-003." not in before
 
     run_button = next(button for button in at.button if button.label == "Run recalculation")
     run_button.click().run()
@@ -212,7 +212,7 @@ def test_run_recalculation_reveals_five_steps_and_keeps_prepared_data_unchanged(
         "Step 4 — GWP conversion",
         "Step 5 — Recalculated result",
         "1,492.5 tCO2e",
-        "This variance generated Gap GAP-003.",
+        "This variance maps to finding GT-DEMO-GAP-003.",
     ):
         assert required in after
 
@@ -260,7 +260,7 @@ def test_materiality_and_gap_handoff_appear_after_reveal_and_use_audit_setup_thr
     before = _collect_rendered_text(at)
     assert "Relative variance:" not in before
     assert "Absolute difference:" not in before
-    assert "Open GAP-003 in Gap Analysis" not in before
+    assert "Register finding GT-DEMO-GAP-003" not in before
 
     run_button = next(button for button in at.button if button.label == "Run recalculation")
     run_button.click().run()
@@ -269,10 +269,12 @@ def test_materiality_and_gap_handoff_appear_after_reveal_and_use_audit_setup_thr
     after = _collect_rendered_text(at)
     assert "Relative variance: 900% versus the 5% threshold — breached." in after
     assert "Absolute difference: 13,432.6 tCO2e versus the 750 tCO2e threshold — breached." in after
-    assert "Open GAP-003 in Gap Analysis" in after
+    assert "Register finding GT-DEMO-GAP-003" in after
 
-    gap_button = next(button for button in at.button if button.label == "Open GAP-003 in Gap Analysis")
+    gap_button = next(button for button in at.button if button.label == "Register finding GT-DEMO-GAP-003")
     gap_button.click().run()
     assert len(at.exception) == 0
     assert "selected_gap_ticket_id" in at.session_state
     assert at.session_state["selected_gap_ticket_id"] == "GT-DEMO-GAP-003"
+    assert "created_gap_ticket_ids" in at.session_state
+    assert "GT-DEMO-GAP-003" in at.session_state["created_gap_ticket_ids"]

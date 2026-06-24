@@ -46,3 +46,11 @@ def test_reconciliation_summary_exists() -> None:
 
     assert "reconciliation_status" in summary
     assert "coverage_note" in summary
+
+
+def test_calculation_page_handoff_references_gt_demo_gap_tickets() -> None:
+    source = Path("pages/5_Calculation_and_Reconciliation.py").read_text(encoding="utf-8-sig")
+
+    assert "GT-DEMO-GAP-003" in source
+    assert "Register finding GT-DEMO-GAP-003" in source
+    assert "GT-DEMO-GAP-010 remains under review pending regulatory basis confirmation." in source

@@ -26,8 +26,10 @@ from src.ui.libraries import (
     resolve_gwp_set,
 )
 from src.ui.state import (
+    create_gap_ticket,
     get_analysis_response,
     get_audit_setup,
+    get_created_gap_ticket_ids,
     get_reviewed_extraction_fields,
     init_session_state,
     open_original_evidence,
@@ -208,6 +210,7 @@ def _render_computed_record(record: dict, audit_setup: dict) -> None:
     calculation_id = str(record.get("calculation_id") or "")
     linked_ids = record.get("linked_evidence_ids") if isinstance(record.get("linked_evidence_ids"), list) else []
     approved_evidence_id = str(linked_ids[0]) if linked_ids else ""
+    created_ids = set(get_created_gap_ticket_ids())
 
     with st.container(border=True):
         st.markdown("### Ready to recalculate")
@@ -312,20 +315,42 @@ def _render_computed_record(record: dict, audit_setup: dict) -> None:
             )
 
         st.markdown("### Gap handoff")
-        st.write("This variance generated Gap GAP-003.")
-        if st.button("Open GAP-003 in Gap Analysis", key=f"open_gap_003_{calculation_id}", type="primary"):
-            set_selected_gap_ticket_id("GT-DEMO-GAP-003")
-            _switch_to(
-                "pages/6_Gap_Analysis.py",
-                "Open Gap Analysis from the sidebar to review GAP-003.",
-            )
+        st.write("This variance maps to finding GT-DEMO-GAP-003.")
 
-        st.caption("GAP-010 — Workbook GWP basis")
-        if st.button("Open GAP-010 in Gap Analysis", key=f"open_gap_010_{calculation_id}"):
+        gap003_col1, gap003_col2 = st.columns(2)
+        if "GT-DEMO-GAP-003" in created_ids:
+            gap003_col1.success("Created")
+            if gap003_col2.button(
+                "Open GT-DEMO-GAP-003 in Gap Analysis",
+                key=f"open_gap_003_{calculation_id}",
+                use_container_width=True,
+            ):
+                set_selected_gap_ticket_id("GT-DEMO-GAP-003")
+                _switch_to(
+                    "pages/6_Gap_Analysis.py",
+                    "Open Gap Analysis from the sidebar to review GT-DEMO-GAP-003.",
+                )
+        else:
+            if gap003_col1.button(
+                "Register finding GT-DEMO-GAP-003",
+                key=f"register_gap_003_{calculation_id}",
+                type="primary",
+                use_container_width=True,
+            ):
+                create_gap_ticket("GT-DEMO-GAP-003")
+                st.success("Created finding GT-DEMO-GAP-003.")
+                st.rerun()
+
+        st.caption("GT-DEMO-GAP-010 remains under review pending regulatory basis confirmation.")
+        if st.button(
+            "Open GT-DEMO-GAP-010 in Gap Analysis",
+            key=f"open_gap_010_{calculation_id}",
+            use_container_width=True,
+        ):
             set_selected_gap_ticket_id("GT-DEMO-GAP-010")
             _switch_to(
                 "pages/6_Gap_Analysis.py",
-                "Open Gap Analysis from the sidebar to review GAP-010.",
+                "Open Gap Analysis from the sidebar to review GT-DEMO-GAP-010.",
             )
 
         activity = _num(record.get("activity_quantity"))
